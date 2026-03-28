@@ -1,0 +1,42 @@
+{
+  "name": "agent-index-filesystem-gdrive",
+  "display_name": "Google Drive",
+  "version": "1.0.0",
+  "description": "Filesystem adapter for Google Drive and Shared Drives",
+  "author": "agent-index",
+  "license": "proprietary",
+  "core_version": "1.0.0",
+  "backend_id": "gdrive",
+  "auth_method": "oauth2",
+  "connection_schema": {
+    "client_id": {
+      "type": "string",
+      "required": true,
+      "description": "OAuth 2.0 client ID from the org's Google Cloud project."
+    },
+    "client_secret": {
+      "type": "string",
+      "required": true,
+      "description": "OAuth 2.0 client secret from the org's Google Cloud project."
+    },
+    "drive_id": {
+      "type": "string",
+      "required": false,
+      "description": "Google Shared Drive ID. Omit for personal Drive."
+    },
+    "root_folder_id": {
+      "type": "string",
+      "required": false,
+      "description": "Folder ID to use as filesystem root. Omit for Drive root."
+    }
+  },
+  "required_domains": [
+    "accounts.google.com",
+    "oauth2.googleapis.com",
+    "www.googleapis.com"
+  ],
+  "node_min_version": "18.0.0",
+  "bundle_entry": "dist/server.bundle.js",
+  "bundle_built_at": "2026-03-26T13:36:55.577Z",
+  "bundle_checksum": "sha256:7132efdc8fe754278a765159b6cb5a288bae758921305f3b49d19bf24fd908a8"
+}
