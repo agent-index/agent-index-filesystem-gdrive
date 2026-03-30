@@ -42,6 +42,13 @@ export class GoogleDriveAdapter {
     // Path cache: maps normalized logical path -> { id, mimeType }
     this.pathCache = new Map();
 
+    // Folder creation locks: maps normalized path -> Promise<id>
+    // Prevents parallel writes from creating duplicate folders.
+    // When _ensureParentDirs needs to create a folder, it stores the
+    // in-flight creation promise here. Concurrent callers for the same
+    // path await the existing promise instead of issuing a second create.
+    this._folderLocks = new Map();
+
     // Temporary HTTP server for OAuth callback (started by startAuth,
     // shut down after code is captured or on timeout)
     this._callbackServer = null;
@@ -736,6 +743,12 @@ export class GoogleDriveAdapter {
   /**
    * Ensure all parent directories exist, creating them as needed.
    * Returns the ID of the immediate parent folder.
+   *
+   * Uses a per-path lock to prevent parallel writes from creating
+   * duplicate folders. Google Drive allows multiple folders with the
+   * same name, so without serialization, concurrent writes to
+   * /email-triage/file1.md and /email-triage/file2.md would each
+   * independently create an /email-triage/ folder.
    */
   async _ensureParentDirs(parentPath) {
     const normalized = this._normalizePath(parentPath);
@@ -743,8 +756,30 @@ export class GoogleDriveAdapter {
       return this._getRootId();
     }
 
+    // If another call is already ensuring this exact path, await it
+    const existingLock = this._folderLocks.get(normalized);
+    if (existingLock) {
+      return existingLock;
+    }
+
+    // Create a lock promise for this path
+    const lockPromise = this._ensureParentDirsInner(normalized);
+    this._folderLocks.set(normalized, lockPromise);
+
+    try {
+      const result = await lockPromise;
+      return result;
+    } finally {
+      this._folderLocks.delete(normalized);
+    }
+  }
+
+  /**
+   * Inner implementation of _ensureParentDirs — called under lock.
+   */
+  async _ensureParentDirsInner(normalized) {
     // Try resolving the full path first
-    const existingId = await this._resolvePathToId(parentPath);
+    const existingId = await this._resolvePathToId(normalized);
     if (existingId) {
       return existingId;
     }

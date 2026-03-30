@@ -43524,6 +43524,7 @@ var GoogleDriveAdapter = class {
     this.oauth2Client = null;
     this.drive = null;
     this.pathCache = /* @__PURE__ */ new Map();
+    this._folderLocks = /* @__PURE__ */ new Map();
     this._callbackServer = null;
     this._capturedAuthCode = null;
   }
@@ -44060,13 +44061,36 @@ var GoogleDriveAdapter = class {
   /**
    * Ensure all parent directories exist, creating them as needed.
    * Returns the ID of the immediate parent folder.
+   *
+   * Uses a per-path lock to prevent parallel writes from creating
+   * duplicate folders. Google Drive allows multiple folders with the
+   * same name, so without serialization, concurrent writes to
+   * /email-triage/file1.md and /email-triage/file2.md would each
+   * independently create an /email-triage/ folder.
    */
   async _ensureParentDirs(parentPath) {
     const normalized = this._normalizePath(parentPath);
     if (normalized === "/") {
       return this._getRootId();
     }
-    const existingId = await this._resolvePathToId(parentPath);
+    const existingLock = this._folderLocks.get(normalized);
+    if (existingLock) {
+      return existingLock;
+    }
+    const lockPromise = this._ensureParentDirsInner(normalized);
+    this._folderLocks.set(normalized, lockPromise);
+    try {
+      const result = await lockPromise;
+      return result;
+    } finally {
+      this._folderLocks.delete(normalized);
+    }
+  }
+  /**
+   * Inner implementation of _ensureParentDirs — called under lock.
+   */
+  async _ensureParentDirsInner(normalized) {
+    const existingId = await this._resolvePathToId(normalized);
     if (existingId) {
       return existingId;
     }

@@ -37,6 +37,6 @@
   ],
   "node_min_version": "18.0.0",
   "bundle_entry": "dist/server.bundle.js",
-  "bundle_built_at": "2026-03-28T18:03:32.774Z",
-  "bundle_checksum": "sha256:af3d6c3827a04d02d7808a4e173e146c1ee6e329136efb09b12f7660b34274fc"
+  "bundle_built_at": "2026-03-30T00:55:14.587Z",
+  "bundle_checksum": "sha256:51a67d04234ab91ee944ec3de34435fb7a471e1db2adf7ef596c2f926dd4ef40"
 }
