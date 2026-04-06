@@ -1,7 +1,7 @@
 {
   "name": "agent-index-filesystem-gdrive",
   "display_name": "Google Drive",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Filesystem adapter for Google Drive and Shared Drives",
   "author": "agent-index",
   "license": "proprietary",

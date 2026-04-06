@@ -1,7 +1,25 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, open, unlink } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { dirname, join } from 'node:path';
 import { URL } from 'node:url';
+
+/**
+ * How long (ms) before a lock file is considered stale and can be broken.
+ * Protects against processes that crash while holding a lock.
+ */
+const LOCK_STALE_MS = 30_000;
+
+/**
+ * How long (ms) to wait between polls when waiting for an existing lock.
+ */
+const LOCK_POLL_MS = 100;
+
+/**
+ * Maximum time (ms) to wait for a lock before giving up.
+ */
+const LOCK_TIMEOUT_MS = 60_000;
+
 import { OAuth2Client } from 'google-auth-library';
 import { drive as driveApi } from '@googleapis/drive';
 import { oauth2 as oauth2Api } from '@googleapis/oauth2';
@@ -42,12 +60,16 @@ export class GoogleDriveAdapter {
     // Path cache: maps normalized logical path -> { id, mimeType }
     this.pathCache = new Map();
 
-    // Folder creation locks: maps normalized path -> Promise<id>
-    // Prevents parallel writes from creating duplicate folders.
-    // When _ensureParentDirs needs to create a folder, it stores the
-    // in-flight creation promise here. Concurrent callers for the same
-    // path await the existing promise instead of issuing a second create.
+    // In-process folder creation locks: maps normalized path -> Promise<id>
+    // Prevents parallel writes *within this process* from creating duplicate
+    // folders. Fast path that avoids filesystem lock I/O when all writes
+    // originate from the same adapter instance.
     this._folderLocks = new Map();
+
+    // Local filesystem lock directory — set during initialize().
+    // Cross-process lock files are created here to prevent duplicate folder
+    // creation when multiple adapter instances (separate processes) race.
+    this._lockDir = null;
 
     // Temporary HTTP server for OAuth callback (started by startAuth,
     // shut down after code is captured or on timeout)
@@ -75,6 +97,11 @@ export class GoogleDriveAdapter {
     );
 
     this.credentialPath = join(credentialStore, 'gdrive.json');
+
+    // Lock directory lives alongside credentials — shared across all
+    // adapter instances on this machine.
+    this._lockDir = join(credentialStore, 'locks');
+    await mkdir(this._lockDir, { recursive: true });
 
     // Try to load stored credentials
     try {
@@ -744,11 +771,20 @@ export class GoogleDriveAdapter {
    * Ensure all parent directories exist, creating them as needed.
    * Returns the ID of the immediate parent folder.
    *
-   * Uses a per-path lock to prevent parallel writes from creating
-   * duplicate folders. Google Drive allows multiple folders with the
-   * same name, so without serialization, concurrent writes to
-   * /email-triage/file1.md and /email-triage/file2.md would each
-   * independently create an /email-triage/ folder.
+   * Two layers of locking prevent duplicate folder creation:
+   *
+   * 1. In-process lock (_folderLocks Map) — fast path for concurrent
+   *    writes within the same adapter instance / Node process.
+   *
+   * 2. Local filesystem lock (_acquirePathLock / _releasePathLock) —
+   *    cross-process safety for when multiple adapter instances (e.g.
+   *    separate MCP server processes spawned by parallel callers) race
+   *    to create the same directory tree on Google Drive.
+   *
+   * Google Drive allows multiple folders with the same name, so without
+   * serialization, concurrent writes to /email-triage/file1.md and
+   * /email-triage/file2.md would each independently create an
+   * /email-triage/ folder.
    */
   async _ensureParentDirs(parentPath) {
     const normalized = this._normalizePath(parentPath);
@@ -756,14 +792,15 @@ export class GoogleDriveAdapter {
       return this._getRootId();
     }
 
-    // If another call is already ensuring this exact path, await it
+    // ── Layer 1: in-process lock ──
+    // If another call in THIS process is already ensuring this path, await it.
     const existingLock = this._folderLocks.get(normalized);
     if (existingLock) {
       return existingLock;
     }
 
     // Create a lock promise for this path
-    const lockPromise = this._ensureParentDirsInner(normalized);
+    const lockPromise = this._ensureParentDirsWithFsLock(normalized);
     this._folderLocks.set(normalized, lockPromise);
 
     try {
@@ -771,6 +808,36 @@ export class GoogleDriveAdapter {
       return result;
     } finally {
       this._folderLocks.delete(normalized);
+    }
+  }
+
+  /**
+   * Wraps _ensureParentDirsInner with a local filesystem lock so that
+   * separate OS processes creating the same directory tree are serialized.
+   */
+  async _ensureParentDirsWithFsLock(normalized) {
+    // Lock on each segment of the path, not just the leaf. This prevents
+    // races on shared intermediate directories (e.g. two writes to
+    // /idea/state/a/file1 and /idea/state/b/file2 both needing to
+    // create /idea/state/).
+    const segments = normalized.split('/').filter(Boolean);
+    const lockPaths = [];
+
+    // Acquire locks from root toward leaf — consistent ordering prevents deadlocks
+    let buildPath = '';
+    for (const segment of segments) {
+      buildPath += `/${segment}`;
+      const lockPath = await this._acquirePathLock(buildPath);
+      lockPaths.push(lockPath);
+    }
+
+    try {
+      return await this._ensureParentDirsInner(normalized);
+    } finally {
+      // Release in reverse order (leaf toward root)
+      for (let i = lockPaths.length - 1; i >= 0; i--) {
+        await this._releasePathLock(lockPaths[i]);
+      }
     }
   }
 
@@ -901,6 +968,90 @@ export class GoogleDriveAdapter {
       throw new NotAuthenticatedError(
         `Token refresh failed: ${err.message}`
       );
+    }
+  }
+
+  // ─── Cross-process path locking ────────────────────────────────────────
+  //
+  // Uses the local filesystem as a shared mutex. Lock files are created
+  // atomically with O_CREAT | O_EXCL so only one process succeeds. Others
+  // poll until the lock is released (file deleted) or stale (older than
+  // LOCK_STALE_MS, indicating a crashed holder).
+  //
+  // Lock files contain the PID and timestamp of the holder for stale
+  // detection. They live in _lockDir (e.g. .agent-index/credentials/locks/).
+
+  /**
+   * Convert a normalized AIFS path to a lock file path.
+   * Uses a hash to avoid filesystem issues with long/nested paths.
+   */
+  _lockFilePath(normalizedPath) {
+    const hash = createHash('sha256').update(normalizedPath).digest('hex').slice(0, 16);
+    // Include a readable prefix for debuggability
+    const safe = normalizedPath.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 40);
+    return join(this._lockDir, `${safe}-${hash}.lock`);
+  }
+
+  /**
+   * Acquire a cross-process lock for the given AIFS path.
+   * Returns the lock file path (needed for release).
+   *
+   * - Attempts atomic file creation (O_CREAT | O_EXCL).
+   * - If the file already exists, checks for staleness, then polls.
+   * - Throws if the lock cannot be acquired within LOCK_TIMEOUT_MS.
+   */
+  async _acquirePathLock(normalizedPath) {
+    const lockFile = this._lockFilePath(normalizedPath);
+    const lockContent = JSON.stringify({ pid: process.pid, ts: Date.now() });
+    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+
+    while (Date.now() < deadline) {
+      try {
+        // O_CREAT | O_EXCL: create file, fail if it already exists.
+        // This is atomic on POSIX filesystems.
+        const fh = await open(lockFile, 'wx');
+        await fh.writeFile(lockContent);
+        await fh.close();
+        return lockFile;
+      } catch (err) {
+        if (err.code !== 'EEXIST') throw err;
+
+        // Lock file exists — check if it's stale
+        try {
+          const content = await readFile(lockFile, 'utf-8');
+          const info = JSON.parse(content);
+          if (Date.now() - info.ts > LOCK_STALE_MS) {
+            // Stale lock from a crashed process — break it
+            try {
+              await unlink(lockFile);
+            } catch {
+              // Another process may have already broken/released it
+            }
+            continue; // Retry immediately
+          }
+        } catch {
+          // Lock file disappeared or is unreadable — retry
+          continue;
+        }
+
+        // Lock is held by another live process — wait and retry
+        await new Promise(r => setTimeout(r, LOCK_POLL_MS));
+      }
+    }
+
+    throw new BackendError(
+      `Timed out waiting for folder lock on path: ${normalizedPath}`
+    );
+  }
+
+  /**
+   * Release a previously acquired lock.
+   */
+  async _releasePathLock(lockFilePath) {
+    try {
+      await unlink(lockFilePath);
+    } catch {
+      // Already released or broken by stale-detection — harmless
     }
   }
 
