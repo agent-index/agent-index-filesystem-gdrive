@@ -3964,7 +3964,7 @@ var require_core = __commonJS({
         uriResolver
       };
     }
-    var Ajv2 = class {
+    var Ajv = class {
       constructor(opts = {}) {
         this.schemas = {};
         this.refs = {};
@@ -4334,9 +4334,9 @@ var require_core = __commonJS({
         }
       }
     };
-    Ajv2.ValidationError = validation_error_1.default;
-    Ajv2.MissingRefError = ref_error_1.default;
-    exports.default = Ajv2;
+    Ajv.ValidationError = validation_error_1.default;
+    Ajv.MissingRefError = ref_error_1.default;
+    exports.default = Ajv;
     function checkOptions(checkOpts, options, msg, log = "error") {
       for (const key in checkOpts) {
         const opt = key;
@@ -6447,7 +6447,7 @@ var require_ajv = __commonJS({
     var draft7MetaSchema = require_json_schema_draft_07();
     var META_SUPPORT_DATA = ["/properties"];
     var META_SCHEMA_ID = "http://json-schema.org/draft-07/schema";
-    var Ajv2 = class extends core_1.default {
+    var Ajv = class extends core_1.default {
       _addVocabularies() {
         super._addVocabularies();
         draft7_1.default.forEach((v) => this.addVocabulary(v));
@@ -6466,11 +6466,11 @@ var require_ajv = __commonJS({
         return this.opts.defaultMeta = super.defaultMeta() || (this.getSchema(META_SCHEMA_ID) ? META_SCHEMA_ID : void 0);
       }
     };
-    exports.Ajv = Ajv2;
-    module.exports = exports = Ajv2;
-    module.exports.Ajv = Ajv2;
+    exports.Ajv = Ajv;
+    module.exports = exports = Ajv;
+    module.exports.Ajv = Ajv;
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.default = Ajv2;
+    exports.default = Ajv;
     var validate_1 = require_validate();
     Object.defineProperty(exports, "KeywordCxt", { enumerable: true, get: function() {
       return validate_1.KeywordCxt;
@@ -6836,7 +6836,7 @@ var require_extend = __commonJS({
       }
       return toStr.call(arr) === "[object Array]";
     };
-    var isPlainObject3 = function isPlainObject4(obj) {
+    var isPlainObject2 = function isPlainObject3(obj) {
       if (!obj || toStr.call(obj) !== "[object Object]") {
         return false;
       }
@@ -6893,12 +6893,12 @@ var require_extend = __commonJS({
             src = getProperty(target, name);
             copy = getProperty(options, name);
             if (target !== copy) {
-              if (deep && copy && (isPlainObject3(copy) || (copyIsArray = isArray(copy)))) {
+              if (deep && copy && (isPlainObject2(copy) || (copyIsArray = isArray(copy)))) {
                 if (copyIsArray) {
                   copyIsArray = false;
                   clone2 = src && isArray(src) ? src : [];
                 } else {
-                  clone2 = src && isPlainObject3(src) ? src : {};
+                  clone2 = src && isPlainObject2(src) ? src : {};
                 }
                 setProperty(target, { name, newValue: extend2(deep, clone2, copy) });
               } else if (typeof copy !== "undefined") {
@@ -14335,7 +14335,7 @@ var require_logging_utils = __commonJS({
     exports.setBackend = setBackend;
     exports.log = log;
     var node_events_1 = __require("node:events");
-    var process4 = __importStar(__require("node:process"));
+    var process3 = __importStar(__require("node:process"));
     var util2 = __importStar(__require("node:util"));
     var colours_1 = require_colours();
     var LogSeverity;
@@ -14386,7 +14386,7 @@ var require_logging_utils = __commonJS({
         this.cached = /* @__PURE__ */ new Map();
         this.filters = [];
         this.filtersSet = false;
-        let nodeFlag = (_a2 = process4.env[exports.env.nodeEnables]) !== null && _a2 !== void 0 ? _a2 : "*";
+        let nodeFlag = (_a2 = process3.env[exports.env.nodeEnables]) !== null && _a2 !== void 0 ? _a2 : "*";
         if (nodeFlag === "all") {
           nodeFlag = "*";
         }
@@ -14426,7 +14426,7 @@ var require_logging_utils = __commonJS({
         return (fields, ...args) => {
           var _a2;
           const nscolour = `${colours_1.Colours.green}${namespace}${colours_1.Colours.reset}`;
-          const pid = `${colours_1.Colours.yellow}${process4.pid}${colours_1.Colours.reset}`;
+          const pid = `${colours_1.Colours.yellow}${process3.pid}${colours_1.Colours.reset}`;
           let level;
           switch (fields.severity) {
             case LogSeverity.ERROR:
@@ -14474,8 +14474,8 @@ var require_logging_utils = __commonJS({
       }
       setFilters() {
         var _a2;
-        const existingFilters = (_a2 = process4.env["NODE_DEBUG"]) !== null && _a2 !== void 0 ? _a2 : "";
-        process4.env["NODE_DEBUG"] = `${existingFilters}${existingFilters ? "," : ""}${this.filters.join(",")}`;
+        const existingFilters = (_a2 = process3.env["NODE_DEBUG"]) !== null && _a2 !== void 0 ? _a2 : "";
+        process3.env["NODE_DEBUG"] = `${existingFilters}${existingFilters ? "," : ""}${this.filters.join(",")}`;
       }
     };
     function getDebugBackend(debugPkg) {
@@ -14521,7 +14521,7 @@ var require_logging_utils = __commonJS({
       loggerCache.clear();
     }
     function log(namespace, parent) {
-      const enablesFlag = process4.env[exports.env.nodeEnables];
+      const enablesFlag = process3.env[exports.env.nodeEnables];
       if (!enablesFlag) {
         return exports.placeholder;
       }
@@ -17224,7 +17224,7 @@ var require_src5 = __commonJS({
     var jws = require_jws();
     var path = __require("path");
     var util_1 = __require("util");
-    var readFile3 = fs.readFile ? (0, util_1.promisify)(fs.readFile) : async () => {
+    var readFile4 = fs.readFile ? (0, util_1.promisify)(fs.readFile) : async () => {
       throw new ErrorWithCode("use key rather than keyFile.", "MISSING_CREDENTIALS");
     };
     var GOOGLE_TOKEN_URL = "https://www.googleapis.com/oauth2/v4/token";
@@ -17313,7 +17313,7 @@ var require_src5 = __commonJS({
         const ext = path.extname(keyFile);
         switch (ext) {
           case ".json": {
-            const key = await readFile3(keyFile, "utf8");
+            const key = await readFile4(keyFile, "utf8");
             const body = JSON.parse(key);
             const privateKey = body.private_key;
             const clientEmail = body.client_email;
@@ -17325,7 +17325,7 @@ var require_src5 = __commonJS({
           case ".der":
           case ".crt":
           case ".pem": {
-            const privateKey = await readFile3(keyFile, "utf8");
+            const privateKey = await readFile4(keyFile, "utf8");
             return { privateKey };
           }
           case ".p12":
@@ -18787,7 +18787,7 @@ var require_filesubjecttokensupplier = __commonJS({
     exports.FileSubjectTokenSupplier = void 0;
     var util_1 = __require("util");
     var fs = __require("fs");
-    var readFile3 = (0, util_1.promisify)((_a2 = fs.readFile) !== null && _a2 !== void 0 ? _a2 : () => {
+    var readFile4 = (0, util_1.promisify)((_a2 = fs.readFile) !== null && _a2 !== void 0 ? _a2 : () => {
     });
     var realpath = (0, util_1.promisify)((_b = fs.realpath) !== null && _b !== void 0 ? _b : () => {
     });
@@ -18824,7 +18824,7 @@ var require_filesubjecttokensupplier = __commonJS({
           throw err;
         }
         let subjectToken;
-        const rawText = await readFile3(parsedFilePath, { encoding: "utf8" });
+        const rawText = await readFile4(parsedFilePath, { encoding: "utf8" });
         if (this.formatType === "text") {
           subjectToken = rawText;
         } else if (this.formatType === "json" && this.subjectTokenFieldName) {
@@ -21371,10 +21371,10 @@ var require_object_inspect = __commonJS({
       }
       if (!isDate(obj) && !isRegExp(obj)) {
         var ys = arrObjKeys(obj, inspect);
-        var isPlainObject3 = gPO ? gPO(obj) === Object.prototype : obj instanceof Object || obj.constructor === Object;
+        var isPlainObject2 = gPO ? gPO(obj) === Object.prototype : obj instanceof Object || obj.constructor === Object;
         var protoTag = obj instanceof Object ? "" : "null prototype";
-        var stringTag = !isPlainObject3 && toStringTag && Object(obj) === obj && toStringTag in obj ? $slice.call(toStr(obj), 8, -1) : protoTag ? "Object" : "";
-        var constructorTag = isPlainObject3 || typeof obj.constructor !== "function" ? "" : obj.constructor.name ? obj.constructor.name + " " : "";
+        var stringTag = !isPlainObject2 && toStringTag && Object(obj) === obj && toStringTag in obj ? $slice.call(toStr(obj), 8, -1) : protoTag ? "Object" : "";
+        var constructorTag = isPlainObject2 || typeof obj.constructor !== "function" ? "" : obj.constructor.name ? obj.constructor.name + " " : "";
         var tag = constructorTag + (stringTag || protoTag ? "[" + $join.call($concat.call([], stringTag || [], protoTag || []), ": ") + "] " : "");
         if (ys.length === 0) {
           return tag + "{}";
@@ -23797,10 +23797,10 @@ var require_http2 = __commonJS({
     var extend2 = require_extend();
     var stream_1 = __require("stream");
     var util2 = __require("util");
-    var process4 = __require("process");
+    var process3 = __require("process");
     var common_1 = require_common();
     var { HTTP2_HEADER_CONTENT_ENCODING, HTTP2_HEADER_CONTENT_TYPE, HTTP2_HEADER_METHOD, HTTP2_HEADER_PATH, HTTP2_HEADER_STATUS } = http2.constants;
-    var DEBUG = !!process4.env.HTTP2_DEBUG;
+    var DEBUG = !!process3.env.HTTP2_DEBUG;
     exports.sessions = {};
     async function request(config2) {
       const opts = extend2(true, {}, config2);
@@ -24485,7 +24485,7 @@ var require_discovery = __commonJS({
     var util2 = __require("util");
     var apirequest_1 = require_apirequest();
     var endpoint_1 = require_endpoint();
-    var readFile3 = util2.promisify(fs.readFile);
+    var readFile4 = util2.promisify(fs.readFile);
     var Discovery = class {
       /**
        * Discovery for discovering API endpoints
@@ -24572,7 +24572,7 @@ var require_discovery = __commonJS({
           const parts = resolve2.parse(apiDiscoveryUrl);
           if (apiDiscoveryUrl && !parts.protocol) {
             this.log("Reading from file " + apiDiscoveryUrl);
-            const file2 = await readFile3(apiDiscoveryUrl, { encoding: "utf8" });
+            const file2 = await readFile4(apiDiscoveryUrl, { encoding: "utf8" });
             return this.makeEndpoint(JSON.parse(file2));
           } else {
             this.log("Requesting " + apiDiscoveryUrl);
@@ -38470,69 +38470,6 @@ var lazyProcessor = (schema, ctx, _json, params) => {
   seen.ref = innerType;
 };
 
-// ../agent-index-filesystem/node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-compat.js
-function isZ4Schema(s) {
-  const schema = s;
-  return !!schema._zod;
-}
-function safeParse2(schema, data) {
-  if (isZ4Schema(schema)) {
-    const result2 = safeParse(schema, data);
-    return result2;
-  }
-  const v3Schema = schema;
-  const result = v3Schema.safeParse(data);
-  return result;
-}
-function getObjectShape(schema) {
-  if (!schema)
-    return void 0;
-  let rawShape;
-  if (isZ4Schema(schema)) {
-    const v4Schema = schema;
-    rawShape = v4Schema._zod?.def?.shape;
-  } else {
-    const v3Schema = schema;
-    rawShape = v3Schema.shape;
-  }
-  if (!rawShape)
-    return void 0;
-  if (typeof rawShape === "function") {
-    try {
-      return rawShape();
-    } catch {
-      return void 0;
-    }
-  }
-  return rawShape;
-}
-function getLiteralValue(schema) {
-  if (isZ4Schema(schema)) {
-    const v4Schema = schema;
-    const def2 = v4Schema._zod?.def;
-    if (def2) {
-      if (def2.value !== void 0)
-        return def2.value;
-      if (Array.isArray(def2.values) && def2.values.length > 0) {
-        return def2.values[0];
-      }
-    }
-  }
-  const v3Schema = schema;
-  const def = v3Schema._def;
-  if (def) {
-    if (def.value !== void 0)
-      return def.value;
-    if (Array.isArray(def.values) && def.values.length > 0) {
-      return def.values[0];
-    }
-  }
-  const directValue = schema.value;
-  if (directValue !== void 0)
-    return directValue;
-  return void 0;
-}
-
 // ../agent-index-filesystem/node_modules/zod/v4/classic/schemas.js
 var schemas_exports3 = {};
 __export(schemas_exports3, {
@@ -38820,7 +38757,7 @@ var ZodRealError = $constructor("ZodError", initializer2, {
 // ../agent-index-filesystem/node_modules/zod/v4/classic/parse.js
 var parse2 = /* @__PURE__ */ _parse(ZodRealError);
 var parseAsync2 = /* @__PURE__ */ _parseAsync(ZodRealError);
-var safeParse3 = /* @__PURE__ */ _safeParse(ZodRealError);
+var safeParse2 = /* @__PURE__ */ _safeParse(ZodRealError);
 var safeParseAsync2 = /* @__PURE__ */ _safeParseAsync(ZodRealError);
 var encode2 = /* @__PURE__ */ _encode(ZodRealError);
 var decode2 = /* @__PURE__ */ _decode(ZodRealError);
@@ -38862,7 +38799,7 @@ var ZodType2 = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
     return inst;
   };
   inst.parse = (data, params) => parse2(inst, data, params, { callee: inst.parse });
-  inst.safeParse = (data, params) => safeParse3(inst, data, params);
+  inst.safeParse = (data, params) => safeParse2(inst, data, params);
   inst.parseAsync = async (data, params) => parseAsync2(inst, data, params, { callee: inst.parseAsync });
   inst.safeParseAsync = async (data, params) => safeParseAsync2(inst, data, params);
   inst.spa = inst.safeParseAsync;
@@ -39926,8 +39863,6 @@ var z = {
 config(en_default2());
 
 // ../agent-index-filesystem/node_modules/@modelcontextprotocol/sdk/dist/esm/types.js
-var LATEST_PROTOCOL_VERSION = "2025-11-25";
-var SUPPORTED_PROTOCOL_VERSIONS = [LATEST_PROTOCOL_VERSION, "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
 var RELATED_TASK_META_KEY = "io.modelcontextprotocol/related-task";
 var JSONRPC_VERSION = "2.0";
 var AssertObjectSchema = custom((v) => v !== null && (typeof v === "object" || typeof v === "function"));
@@ -39977,7 +39912,6 @@ var TaskAugmentedRequestParamsSchema = BaseRequestParamsSchema.extend({
    */
   task: TaskMetadataSchema.optional()
 });
-var isTaskAugmentedRequestParams = (value) => TaskAugmentedRequestParamsSchema.safeParse(value).success;
 var RequestSchema = object2({
   method: string2(),
   params: BaseRequestParamsSchema.loose().optional()
@@ -40006,18 +39940,15 @@ var JSONRPCRequestSchema = object2({
   id: RequestIdSchema,
   ...RequestSchema.shape
 }).strict();
-var isJSONRPCRequest = (value) => JSONRPCRequestSchema.safeParse(value).success;
 var JSONRPCNotificationSchema = object2({
   jsonrpc: literal(JSONRPC_VERSION),
   ...NotificationSchema.shape
 }).strict();
-var isJSONRPCNotification = (value) => JSONRPCNotificationSchema.safeParse(value).success;
 var JSONRPCResultResponseSchema = object2({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   result: ResultSchema
 }).strict();
-var isJSONRPCResultResponse = (value) => JSONRPCResultResponseSchema.safeParse(value).success;
 var ErrorCode;
 (function(ErrorCode2) {
   ErrorCode2[ErrorCode2["ConnectionClosed"] = -32e3] = "ConnectionClosed";
@@ -40047,7 +39978,6 @@ var JSONRPCErrorResponseSchema = object2({
     data: unknown().optional()
   })
 }).strict();
-var isJSONRPCErrorResponse = (value) => JSONRPCErrorResponseSchema.safeParse(value).success;
 var JSONRPCMessageSchema = union([
   JSONRPCRequestSchema,
   JSONRPCNotificationSchema,
@@ -41400,41 +41330,6 @@ var ServerResultSchema = union([
   ListTasksResultSchema,
   CreateTaskResultSchema
 ]);
-var McpError = class _McpError extends Error {
-  constructor(code, message, data) {
-    super(`MCP error ${code}: ${message}`);
-    this.code = code;
-    this.data = data;
-    this.name = "McpError";
-  }
-  /**
-   * Factory method to create the appropriate error type based on the error code and data
-   */
-  static fromError(code, message, data) {
-    if (code === ErrorCode.UrlElicitationRequired && data) {
-      const errorData = data;
-      if (errorData.elicitations) {
-        return new UrlElicitationRequiredError(errorData.elicitations, message);
-      }
-    }
-    return new _McpError(code, message, data);
-  }
-};
-var UrlElicitationRequiredError = class extends McpError {
-  constructor(elicitations, message = `URL elicitation${elicitations.length > 1 ? "s" : ""} required`) {
-    super(ErrorCode.UrlElicitationRequired, message, {
-      elicitations
-    });
-  }
-  get elicitations() {
-    return this.data?.elicitations ?? [];
-  }
-};
-
-// ../agent-index-filesystem/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/interfaces.js
-function isTerminal(status) {
-  return status === "completed" || status === "failed" || status === "cancelled";
-}
 
 // ../agent-index-filesystem/node_modules/zod-to-json-schema/dist/esm/Options.js
 var ignoreOverride = Symbol("Let zodToJsonSchema decide on which parser to use");
@@ -41442,1768 +41337,8 @@ var ignoreOverride = Symbol("Let zodToJsonSchema decide on which parser to use")
 // ../agent-index-filesystem/node_modules/zod-to-json-schema/dist/esm/parsers/string.js
 var ALPHA_NUMERIC = new Set("ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz0123456789");
 
-// ../agent-index-filesystem/node_modules/@modelcontextprotocol/sdk/dist/esm/server/zod-json-schema-compat.js
-function getMethodLiteral(schema) {
-  const shape = getObjectShape(schema);
-  const methodSchema = shape?.method;
-  if (!methodSchema) {
-    throw new Error("Schema is missing a method literal");
-  }
-  const value = getLiteralValue(methodSchema);
-  if (typeof value !== "string") {
-    throw new Error("Schema method literal must be a string");
-  }
-  return value;
-}
-function parseWithCompat(schema, data) {
-  const result = safeParse2(schema, data);
-  if (!result.success) {
-    throw result.error;
-  }
-  return result.data;
-}
-
-// ../agent-index-filesystem/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/protocol.js
-var DEFAULT_REQUEST_TIMEOUT_MSEC = 6e4;
-var Protocol = class {
-  constructor(_options) {
-    this._options = _options;
-    this._requestMessageId = 0;
-    this._requestHandlers = /* @__PURE__ */ new Map();
-    this._requestHandlerAbortControllers = /* @__PURE__ */ new Map();
-    this._notificationHandlers = /* @__PURE__ */ new Map();
-    this._responseHandlers = /* @__PURE__ */ new Map();
-    this._progressHandlers = /* @__PURE__ */ new Map();
-    this._timeoutInfo = /* @__PURE__ */ new Map();
-    this._pendingDebouncedNotifications = /* @__PURE__ */ new Set();
-    this._taskProgressTokens = /* @__PURE__ */ new Map();
-    this._requestResolvers = /* @__PURE__ */ new Map();
-    this.setNotificationHandler(CancelledNotificationSchema, (notification) => {
-      this._oncancel(notification);
-    });
-    this.setNotificationHandler(ProgressNotificationSchema, (notification) => {
-      this._onprogress(notification);
-    });
-    this.setRequestHandler(
-      PingRequestSchema,
-      // Automatic pong by default.
-      (_request) => ({})
-    );
-    this._taskStore = _options?.taskStore;
-    this._taskMessageQueue = _options?.taskMessageQueue;
-    if (this._taskStore) {
-      this.setRequestHandler(GetTaskRequestSchema, async (request, extra) => {
-        const task = await this._taskStore.getTask(request.params.taskId, extra.sessionId);
-        if (!task) {
-          throw new McpError(ErrorCode.InvalidParams, "Failed to retrieve task: Task not found");
-        }
-        return {
-          ...task
-        };
-      });
-      this.setRequestHandler(GetTaskPayloadRequestSchema, async (request, extra) => {
-        const handleTaskResult = async () => {
-          const taskId = request.params.taskId;
-          if (this._taskMessageQueue) {
-            let queuedMessage;
-            while (queuedMessage = await this._taskMessageQueue.dequeue(taskId, extra.sessionId)) {
-              if (queuedMessage.type === "response" || queuedMessage.type === "error") {
-                const message = queuedMessage.message;
-                const requestId = message.id;
-                const resolver = this._requestResolvers.get(requestId);
-                if (resolver) {
-                  this._requestResolvers.delete(requestId);
-                  if (queuedMessage.type === "response") {
-                    resolver(message);
-                  } else {
-                    const errorMessage = message;
-                    const error2 = new McpError(errorMessage.error.code, errorMessage.error.message, errorMessage.error.data);
-                    resolver(error2);
-                  }
-                } else {
-                  const messageType = queuedMessage.type === "response" ? "Response" : "Error";
-                  this._onerror(new Error(`${messageType} handler missing for request ${requestId}`));
-                }
-                continue;
-              }
-              await this._transport?.send(queuedMessage.message, { relatedRequestId: extra.requestId });
-            }
-          }
-          const task = await this._taskStore.getTask(taskId, extra.sessionId);
-          if (!task) {
-            throw new McpError(ErrorCode.InvalidParams, `Task not found: ${taskId}`);
-          }
-          if (!isTerminal(task.status)) {
-            await this._waitForTaskUpdate(taskId, extra.signal);
-            return await handleTaskResult();
-          }
-          if (isTerminal(task.status)) {
-            const result = await this._taskStore.getTaskResult(taskId, extra.sessionId);
-            this._clearTaskQueue(taskId);
-            return {
-              ...result,
-              _meta: {
-                ...result._meta,
-                [RELATED_TASK_META_KEY]: {
-                  taskId
-                }
-              }
-            };
-          }
-          return await handleTaskResult();
-        };
-        return await handleTaskResult();
-      });
-      this.setRequestHandler(ListTasksRequestSchema, async (request, extra) => {
-        try {
-          const { tasks, nextCursor } = await this._taskStore.listTasks(request.params?.cursor, extra.sessionId);
-          return {
-            tasks,
-            nextCursor,
-            _meta: {}
-          };
-        } catch (error2) {
-          throw new McpError(ErrorCode.InvalidParams, `Failed to list tasks: ${error2 instanceof Error ? error2.message : String(error2)}`);
-        }
-      });
-      this.setRequestHandler(CancelTaskRequestSchema, async (request, extra) => {
-        try {
-          const task = await this._taskStore.getTask(request.params.taskId, extra.sessionId);
-          if (!task) {
-            throw new McpError(ErrorCode.InvalidParams, `Task not found: ${request.params.taskId}`);
-          }
-          if (isTerminal(task.status)) {
-            throw new McpError(ErrorCode.InvalidParams, `Cannot cancel task in terminal status: ${task.status}`);
-          }
-          await this._taskStore.updateTaskStatus(request.params.taskId, "cancelled", "Client cancelled task execution.", extra.sessionId);
-          this._clearTaskQueue(request.params.taskId);
-          const cancelledTask = await this._taskStore.getTask(request.params.taskId, extra.sessionId);
-          if (!cancelledTask) {
-            throw new McpError(ErrorCode.InvalidParams, `Task not found after cancellation: ${request.params.taskId}`);
-          }
-          return {
-            _meta: {},
-            ...cancelledTask
-          };
-        } catch (error2) {
-          if (error2 instanceof McpError) {
-            throw error2;
-          }
-          throw new McpError(ErrorCode.InvalidRequest, `Failed to cancel task: ${error2 instanceof Error ? error2.message : String(error2)}`);
-        }
-      });
-    }
-  }
-  async _oncancel(notification) {
-    if (!notification.params.requestId) {
-      return;
-    }
-    const controller = this._requestHandlerAbortControllers.get(notification.params.requestId);
-    controller?.abort(notification.params.reason);
-  }
-  _setupTimeout(messageId, timeout, maxTotalTimeout, onTimeout, resetTimeoutOnProgress = false) {
-    this._timeoutInfo.set(messageId, {
-      timeoutId: setTimeout(onTimeout, timeout),
-      startTime: Date.now(),
-      timeout,
-      maxTotalTimeout,
-      resetTimeoutOnProgress,
-      onTimeout
-    });
-  }
-  _resetTimeout(messageId) {
-    const info = this._timeoutInfo.get(messageId);
-    if (!info)
-      return false;
-    const totalElapsed = Date.now() - info.startTime;
-    if (info.maxTotalTimeout && totalElapsed >= info.maxTotalTimeout) {
-      this._timeoutInfo.delete(messageId);
-      throw McpError.fromError(ErrorCode.RequestTimeout, "Maximum total timeout exceeded", {
-        maxTotalTimeout: info.maxTotalTimeout,
-        totalElapsed
-      });
-    }
-    clearTimeout(info.timeoutId);
-    info.timeoutId = setTimeout(info.onTimeout, info.timeout);
-    return true;
-  }
-  _cleanupTimeout(messageId) {
-    const info = this._timeoutInfo.get(messageId);
-    if (info) {
-      clearTimeout(info.timeoutId);
-      this._timeoutInfo.delete(messageId);
-    }
-  }
-  /**
-   * Attaches to the given transport, starts it, and starts listening for messages.
-   *
-   * The Protocol object assumes ownership of the Transport, replacing any callbacks that have already been set, and expects that it is the only user of the Transport instance going forward.
-   */
-  async connect(transport) {
-    if (this._transport) {
-      throw new Error("Already connected to a transport. Call close() before connecting to a new transport, or use a separate Protocol instance per connection.");
-    }
-    this._transport = transport;
-    const _onclose = this.transport?.onclose;
-    this._transport.onclose = () => {
-      _onclose?.();
-      this._onclose();
-    };
-    const _onerror = this.transport?.onerror;
-    this._transport.onerror = (error2) => {
-      _onerror?.(error2);
-      this._onerror(error2);
-    };
-    const _onmessage = this._transport?.onmessage;
-    this._transport.onmessage = (message, extra) => {
-      _onmessage?.(message, extra);
-      if (isJSONRPCResultResponse(message) || isJSONRPCErrorResponse(message)) {
-        this._onresponse(message);
-      } else if (isJSONRPCRequest(message)) {
-        this._onrequest(message, extra);
-      } else if (isJSONRPCNotification(message)) {
-        this._onnotification(message);
-      } else {
-        this._onerror(new Error(`Unknown message type: ${JSON.stringify(message)}`));
-      }
-    };
-    await this._transport.start();
-  }
-  _onclose() {
-    const responseHandlers = this._responseHandlers;
-    this._responseHandlers = /* @__PURE__ */ new Map();
-    this._progressHandlers.clear();
-    this._taskProgressTokens.clear();
-    this._pendingDebouncedNotifications.clear();
-    for (const info of this._timeoutInfo.values()) {
-      clearTimeout(info.timeoutId);
-    }
-    this._timeoutInfo.clear();
-    for (const controller of this._requestHandlerAbortControllers.values()) {
-      controller.abort();
-    }
-    this._requestHandlerAbortControllers.clear();
-    const error2 = McpError.fromError(ErrorCode.ConnectionClosed, "Connection closed");
-    this._transport = void 0;
-    this.onclose?.();
-    for (const handler of responseHandlers.values()) {
-      handler(error2);
-    }
-  }
-  _onerror(error2) {
-    this.onerror?.(error2);
-  }
-  _onnotification(notification) {
-    const handler = this._notificationHandlers.get(notification.method) ?? this.fallbackNotificationHandler;
-    if (handler === void 0) {
-      return;
-    }
-    Promise.resolve().then(() => handler(notification)).catch((error2) => this._onerror(new Error(`Uncaught error in notification handler: ${error2}`)));
-  }
-  _onrequest(request, extra) {
-    const handler = this._requestHandlers.get(request.method) ?? this.fallbackRequestHandler;
-    const capturedTransport = this._transport;
-    const relatedTaskId = request.params?._meta?.[RELATED_TASK_META_KEY]?.taskId;
-    if (handler === void 0) {
-      const errorResponse = {
-        jsonrpc: "2.0",
-        id: request.id,
-        error: {
-          code: ErrorCode.MethodNotFound,
-          message: "Method not found"
-        }
-      };
-      if (relatedTaskId && this._taskMessageQueue) {
-        this._enqueueTaskMessage(relatedTaskId, {
-          type: "error",
-          message: errorResponse,
-          timestamp: Date.now()
-        }, capturedTransport?.sessionId).catch((error2) => this._onerror(new Error(`Failed to enqueue error response: ${error2}`)));
-      } else {
-        capturedTransport?.send(errorResponse).catch((error2) => this._onerror(new Error(`Failed to send an error response: ${error2}`)));
-      }
-      return;
-    }
-    const abortController = new AbortController();
-    this._requestHandlerAbortControllers.set(request.id, abortController);
-    const taskCreationParams = isTaskAugmentedRequestParams(request.params) ? request.params.task : void 0;
-    const taskStore = this._taskStore ? this.requestTaskStore(request, capturedTransport?.sessionId) : void 0;
-    const fullExtra = {
-      signal: abortController.signal,
-      sessionId: capturedTransport?.sessionId,
-      _meta: request.params?._meta,
-      sendNotification: async (notification) => {
-        if (abortController.signal.aborted)
-          return;
-        const notificationOptions = { relatedRequestId: request.id };
-        if (relatedTaskId) {
-          notificationOptions.relatedTask = { taskId: relatedTaskId };
-        }
-        await this.notification(notification, notificationOptions);
-      },
-      sendRequest: async (r, resultSchema, options) => {
-        if (abortController.signal.aborted) {
-          throw new McpError(ErrorCode.ConnectionClosed, "Request was cancelled");
-        }
-        const requestOptions = { ...options, relatedRequestId: request.id };
-        if (relatedTaskId && !requestOptions.relatedTask) {
-          requestOptions.relatedTask = { taskId: relatedTaskId };
-        }
-        const effectiveTaskId = requestOptions.relatedTask?.taskId ?? relatedTaskId;
-        if (effectiveTaskId && taskStore) {
-          await taskStore.updateTaskStatus(effectiveTaskId, "input_required");
-        }
-        return await this.request(r, resultSchema, requestOptions);
-      },
-      authInfo: extra?.authInfo,
-      requestId: request.id,
-      requestInfo: extra?.requestInfo,
-      taskId: relatedTaskId,
-      taskStore,
-      taskRequestedTtl: taskCreationParams?.ttl,
-      closeSSEStream: extra?.closeSSEStream,
-      closeStandaloneSSEStream: extra?.closeStandaloneSSEStream
-    };
-    Promise.resolve().then(() => {
-      if (taskCreationParams) {
-        this.assertTaskHandlerCapability(request.method);
-      }
-    }).then(() => handler(request, fullExtra)).then(async (result) => {
-      if (abortController.signal.aborted) {
-        return;
-      }
-      const response = {
-        result,
-        jsonrpc: "2.0",
-        id: request.id
-      };
-      if (relatedTaskId && this._taskMessageQueue) {
-        await this._enqueueTaskMessage(relatedTaskId, {
-          type: "response",
-          message: response,
-          timestamp: Date.now()
-        }, capturedTransport?.sessionId);
-      } else {
-        await capturedTransport?.send(response);
-      }
-    }, async (error2) => {
-      if (abortController.signal.aborted) {
-        return;
-      }
-      const errorResponse = {
-        jsonrpc: "2.0",
-        id: request.id,
-        error: {
-          code: Number.isSafeInteger(error2["code"]) ? error2["code"] : ErrorCode.InternalError,
-          message: error2.message ?? "Internal error",
-          ...error2["data"] !== void 0 && { data: error2["data"] }
-        }
-      };
-      if (relatedTaskId && this._taskMessageQueue) {
-        await this._enqueueTaskMessage(relatedTaskId, {
-          type: "error",
-          message: errorResponse,
-          timestamp: Date.now()
-        }, capturedTransport?.sessionId);
-      } else {
-        await capturedTransport?.send(errorResponse);
-      }
-    }).catch((error2) => this._onerror(new Error(`Failed to send response: ${error2}`))).finally(() => {
-      if (this._requestHandlerAbortControllers.get(request.id) === abortController) {
-        this._requestHandlerAbortControllers.delete(request.id);
-      }
-    });
-  }
-  _onprogress(notification) {
-    const { progressToken, ...params } = notification.params;
-    const messageId = Number(progressToken);
-    const handler = this._progressHandlers.get(messageId);
-    if (!handler) {
-      this._onerror(new Error(`Received a progress notification for an unknown token: ${JSON.stringify(notification)}`));
-      return;
-    }
-    const responseHandler = this._responseHandlers.get(messageId);
-    const timeoutInfo = this._timeoutInfo.get(messageId);
-    if (timeoutInfo && responseHandler && timeoutInfo.resetTimeoutOnProgress) {
-      try {
-        this._resetTimeout(messageId);
-      } catch (error2) {
-        this._responseHandlers.delete(messageId);
-        this._progressHandlers.delete(messageId);
-        this._cleanupTimeout(messageId);
-        responseHandler(error2);
-        return;
-      }
-    }
-    handler(params);
-  }
-  _onresponse(response) {
-    const messageId = Number(response.id);
-    const resolver = this._requestResolvers.get(messageId);
-    if (resolver) {
-      this._requestResolvers.delete(messageId);
-      if (isJSONRPCResultResponse(response)) {
-        resolver(response);
-      } else {
-        const error2 = new McpError(response.error.code, response.error.message, response.error.data);
-        resolver(error2);
-      }
-      return;
-    }
-    const handler = this._responseHandlers.get(messageId);
-    if (handler === void 0) {
-      this._onerror(new Error(`Received a response for an unknown message ID: ${JSON.stringify(response)}`));
-      return;
-    }
-    this._responseHandlers.delete(messageId);
-    this._cleanupTimeout(messageId);
-    let isTaskResponse = false;
-    if (isJSONRPCResultResponse(response) && response.result && typeof response.result === "object") {
-      const result = response.result;
-      if (result.task && typeof result.task === "object") {
-        const task = result.task;
-        if (typeof task.taskId === "string") {
-          isTaskResponse = true;
-          this._taskProgressTokens.set(task.taskId, messageId);
-        }
-      }
-    }
-    if (!isTaskResponse) {
-      this._progressHandlers.delete(messageId);
-    }
-    if (isJSONRPCResultResponse(response)) {
-      handler(response);
-    } else {
-      const error2 = McpError.fromError(response.error.code, response.error.message, response.error.data);
-      handler(error2);
-    }
-  }
-  get transport() {
-    return this._transport;
-  }
-  /**
-   * Closes the connection.
-   */
-  async close() {
-    await this._transport?.close();
-  }
-  /**
-   * Sends a request and returns an AsyncGenerator that yields response messages.
-   * The generator is guaranteed to end with either a 'result' or 'error' message.
-   *
-   * @example
-   * ```typescript
-   * const stream = protocol.requestStream(request, resultSchema, options);
-   * for await (const message of stream) {
-   *   switch (message.type) {
-   *     case 'taskCreated':
-   *       console.log('Task created:', message.task.taskId);
-   *       break;
-   *     case 'taskStatus':
-   *       console.log('Task status:', message.task.status);
-   *       break;
-   *     case 'result':
-   *       console.log('Final result:', message.result);
-   *       break;
-   *     case 'error':
-   *       console.error('Error:', message.error);
-   *       break;
-   *   }
-   * }
-   * ```
-   *
-   * @experimental Use `client.experimental.tasks.requestStream()` to access this method.
-   */
-  async *requestStream(request, resultSchema, options) {
-    const { task } = options ?? {};
-    if (!task) {
-      try {
-        const result = await this.request(request, resultSchema, options);
-        yield { type: "result", result };
-      } catch (error2) {
-        yield {
-          type: "error",
-          error: error2 instanceof McpError ? error2 : new McpError(ErrorCode.InternalError, String(error2))
-        };
-      }
-      return;
-    }
-    let taskId;
-    try {
-      const createResult = await this.request(request, CreateTaskResultSchema, options);
-      if (createResult.task) {
-        taskId = createResult.task.taskId;
-        yield { type: "taskCreated", task: createResult.task };
-      } else {
-        throw new McpError(ErrorCode.InternalError, "Task creation did not return a task");
-      }
-      while (true) {
-        const task2 = await this.getTask({ taskId }, options);
-        yield { type: "taskStatus", task: task2 };
-        if (isTerminal(task2.status)) {
-          if (task2.status === "completed") {
-            const result = await this.getTaskResult({ taskId }, resultSchema, options);
-            yield { type: "result", result };
-          } else if (task2.status === "failed") {
-            yield {
-              type: "error",
-              error: new McpError(ErrorCode.InternalError, `Task ${taskId} failed`)
-            };
-          } else if (task2.status === "cancelled") {
-            yield {
-              type: "error",
-              error: new McpError(ErrorCode.InternalError, `Task ${taskId} was cancelled`)
-            };
-          }
-          return;
-        }
-        if (task2.status === "input_required") {
-          const result = await this.getTaskResult({ taskId }, resultSchema, options);
-          yield { type: "result", result };
-          return;
-        }
-        const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve2) => setTimeout(resolve2, pollInterval));
-        options?.signal?.throwIfAborted();
-      }
-    } catch (error2) {
-      yield {
-        type: "error",
-        error: error2 instanceof McpError ? error2 : new McpError(ErrorCode.InternalError, String(error2))
-      };
-    }
-  }
-  /**
-   * Sends a request and waits for a response.
-   *
-   * Do not use this method to emit notifications! Use notification() instead.
-   */
-  request(request, resultSchema, options) {
-    const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve2, reject) => {
-      const earlyReject = (error2) => {
-        reject(error2);
-      };
-      if (!this._transport) {
-        earlyReject(new Error("Not connected"));
-        return;
-      }
-      if (this._options?.enforceStrictCapabilities === true) {
-        try {
-          this.assertCapabilityForMethod(request.method);
-          if (task) {
-            this.assertTaskCapability(request.method);
-          }
-        } catch (e) {
-          earlyReject(e);
-          return;
-        }
-      }
-      options?.signal?.throwIfAborted();
-      const messageId = this._requestMessageId++;
-      const jsonrpcRequest = {
-        ...request,
-        jsonrpc: "2.0",
-        id: messageId
-      };
-      if (options?.onprogress) {
-        this._progressHandlers.set(messageId, options.onprogress);
-        jsonrpcRequest.params = {
-          ...request.params,
-          _meta: {
-            ...request.params?._meta || {},
-            progressToken: messageId
-          }
-        };
-      }
-      if (task) {
-        jsonrpcRequest.params = {
-          ...jsonrpcRequest.params,
-          task
-        };
-      }
-      if (relatedTask) {
-        jsonrpcRequest.params = {
-          ...jsonrpcRequest.params,
-          _meta: {
-            ...jsonrpcRequest.params?._meta || {},
-            [RELATED_TASK_META_KEY]: relatedTask
-          }
-        };
-      }
-      const cancel = (reason) => {
-        this._responseHandlers.delete(messageId);
-        this._progressHandlers.delete(messageId);
-        this._cleanupTimeout(messageId);
-        this._transport?.send({
-          jsonrpc: "2.0",
-          method: "notifications/cancelled",
-          params: {
-            requestId: messageId,
-            reason: String(reason)
-          }
-        }, { relatedRequestId, resumptionToken, onresumptiontoken }).catch((error3) => this._onerror(new Error(`Failed to send cancellation: ${error3}`)));
-        const error2 = reason instanceof McpError ? reason : new McpError(ErrorCode.RequestTimeout, String(reason));
-        reject(error2);
-      };
-      this._responseHandlers.set(messageId, (response) => {
-        if (options?.signal?.aborted) {
-          return;
-        }
-        if (response instanceof Error) {
-          return reject(response);
-        }
-        try {
-          const parseResult = safeParse2(resultSchema, response.result);
-          if (!parseResult.success) {
-            reject(parseResult.error);
-          } else {
-            resolve2(parseResult.data);
-          }
-        } catch (error2) {
-          reject(error2);
-        }
-      });
-      options?.signal?.addEventListener("abort", () => {
-        cancel(options?.signal?.reason);
-      });
-      const timeout = options?.timeout ?? DEFAULT_REQUEST_TIMEOUT_MSEC;
-      const timeoutHandler = () => cancel(McpError.fromError(ErrorCode.RequestTimeout, "Request timed out", { timeout }));
-      this._setupTimeout(messageId, timeout, options?.maxTotalTimeout, timeoutHandler, options?.resetTimeoutOnProgress ?? false);
-      const relatedTaskId = relatedTask?.taskId;
-      if (relatedTaskId) {
-        const responseResolver = (response) => {
-          const handler = this._responseHandlers.get(messageId);
-          if (handler) {
-            handler(response);
-          } else {
-            this._onerror(new Error(`Response handler missing for side-channeled request ${messageId}`));
-          }
-        };
-        this._requestResolvers.set(messageId, responseResolver);
-        this._enqueueTaskMessage(relatedTaskId, {
-          type: "request",
-          message: jsonrpcRequest,
-          timestamp: Date.now()
-        }).catch((error2) => {
-          this._cleanupTimeout(messageId);
-          reject(error2);
-        });
-      } else {
-        this._transport.send(jsonrpcRequest, { relatedRequestId, resumptionToken, onresumptiontoken }).catch((error2) => {
-          this._cleanupTimeout(messageId);
-          reject(error2);
-        });
-      }
-    });
-  }
-  /**
-   * Gets the current status of a task.
-   *
-   * @experimental Use `client.experimental.tasks.getTask()` to access this method.
-   */
-  async getTask(params, options) {
-    return this.request({ method: "tasks/get", params }, GetTaskResultSchema, options);
-  }
-  /**
-   * Retrieves the result of a completed task.
-   *
-   * @experimental Use `client.experimental.tasks.getTaskResult()` to access this method.
-   */
-  async getTaskResult(params, resultSchema, options) {
-    return this.request({ method: "tasks/result", params }, resultSchema, options);
-  }
-  /**
-   * Lists tasks, optionally starting from a pagination cursor.
-   *
-   * @experimental Use `client.experimental.tasks.listTasks()` to access this method.
-   */
-  async listTasks(params, options) {
-    return this.request({ method: "tasks/list", params }, ListTasksResultSchema, options);
-  }
-  /**
-   * Cancels a specific task.
-   *
-   * @experimental Use `client.experimental.tasks.cancelTask()` to access this method.
-   */
-  async cancelTask(params, options) {
-    return this.request({ method: "tasks/cancel", params }, CancelTaskResultSchema, options);
-  }
-  /**
-   * Emits a notification, which is a one-way message that does not expect a response.
-   */
-  async notification(notification, options) {
-    if (!this._transport) {
-      throw new Error("Not connected");
-    }
-    this.assertNotificationCapability(notification.method);
-    const relatedTaskId = options?.relatedTask?.taskId;
-    if (relatedTaskId) {
-      const jsonrpcNotification2 = {
-        ...notification,
-        jsonrpc: "2.0",
-        params: {
-          ...notification.params,
-          _meta: {
-            ...notification.params?._meta || {},
-            [RELATED_TASK_META_KEY]: options.relatedTask
-          }
-        }
-      };
-      await this._enqueueTaskMessage(relatedTaskId, {
-        type: "notification",
-        message: jsonrpcNotification2,
-        timestamp: Date.now()
-      });
-      return;
-    }
-    const debouncedMethods = this._options?.debouncedNotificationMethods ?? [];
-    const canDebounce = debouncedMethods.includes(notification.method) && !notification.params && !options?.relatedRequestId && !options?.relatedTask;
-    if (canDebounce) {
-      if (this._pendingDebouncedNotifications.has(notification.method)) {
-        return;
-      }
-      this._pendingDebouncedNotifications.add(notification.method);
-      Promise.resolve().then(() => {
-        this._pendingDebouncedNotifications.delete(notification.method);
-        if (!this._transport) {
-          return;
-        }
-        let jsonrpcNotification2 = {
-          ...notification,
-          jsonrpc: "2.0"
-        };
-        if (options?.relatedTask) {
-          jsonrpcNotification2 = {
-            ...jsonrpcNotification2,
-            params: {
-              ...jsonrpcNotification2.params,
-              _meta: {
-                ...jsonrpcNotification2.params?._meta || {},
-                [RELATED_TASK_META_KEY]: options.relatedTask
-              }
-            }
-          };
-        }
-        this._transport?.send(jsonrpcNotification2, options).catch((error2) => this._onerror(error2));
-      });
-      return;
-    }
-    let jsonrpcNotification = {
-      ...notification,
-      jsonrpc: "2.0"
-    };
-    if (options?.relatedTask) {
-      jsonrpcNotification = {
-        ...jsonrpcNotification,
-        params: {
-          ...jsonrpcNotification.params,
-          _meta: {
-            ...jsonrpcNotification.params?._meta || {},
-            [RELATED_TASK_META_KEY]: options.relatedTask
-          }
-        }
-      };
-    }
-    await this._transport.send(jsonrpcNotification, options);
-  }
-  /**
-   * Registers a handler to invoke when this protocol object receives a request with the given method.
-   *
-   * Note that this will replace any previous request handler for the same method.
-   */
-  setRequestHandler(requestSchema, handler) {
-    const method = getMethodLiteral(requestSchema);
-    this.assertRequestHandlerCapability(method);
-    this._requestHandlers.set(method, (request, extra) => {
-      const parsed = parseWithCompat(requestSchema, request);
-      return Promise.resolve(handler(parsed, extra));
-    });
-  }
-  /**
-   * Removes the request handler for the given method.
-   */
-  removeRequestHandler(method) {
-    this._requestHandlers.delete(method);
-  }
-  /**
-   * Asserts that a request handler has not already been set for the given method, in preparation for a new one being automatically installed.
-   */
-  assertCanSetRequestHandler(method) {
-    if (this._requestHandlers.has(method)) {
-      throw new Error(`A request handler for ${method} already exists, which would be overridden`);
-    }
-  }
-  /**
-   * Registers a handler to invoke when this protocol object receives a notification with the given method.
-   *
-   * Note that this will replace any previous notification handler for the same method.
-   */
-  setNotificationHandler(notificationSchema, handler) {
-    const method = getMethodLiteral(notificationSchema);
-    this._notificationHandlers.set(method, (notification) => {
-      const parsed = parseWithCompat(notificationSchema, notification);
-      return Promise.resolve(handler(parsed));
-    });
-  }
-  /**
-   * Removes the notification handler for the given method.
-   */
-  removeNotificationHandler(method) {
-    this._notificationHandlers.delete(method);
-  }
-  /**
-   * Cleans up the progress handler associated with a task.
-   * This should be called when a task reaches a terminal status.
-   */
-  _cleanupTaskProgressHandler(taskId) {
-    const progressToken = this._taskProgressTokens.get(taskId);
-    if (progressToken !== void 0) {
-      this._progressHandlers.delete(progressToken);
-      this._taskProgressTokens.delete(taskId);
-    }
-  }
-  /**
-   * Enqueues a task-related message for side-channel delivery via tasks/result.
-   * @param taskId The task ID to associate the message with
-   * @param message The message to enqueue
-   * @param sessionId Optional session ID for binding the operation to a specific session
-   * @throws Error if taskStore is not configured or if enqueue fails (e.g., queue overflow)
-   *
-   * Note: If enqueue fails, it's the TaskMessageQueue implementation's responsibility to handle
-   * the error appropriately (e.g., by failing the task, logging, etc.). The Protocol layer
-   * simply propagates the error.
-   */
-  async _enqueueTaskMessage(taskId, message, sessionId) {
-    if (!this._taskStore || !this._taskMessageQueue) {
-      throw new Error("Cannot enqueue task message: taskStore and taskMessageQueue are not configured");
-    }
-    const maxQueueSize = this._options?.maxTaskQueueSize;
-    await this._taskMessageQueue.enqueue(taskId, message, sessionId, maxQueueSize);
-  }
-  /**
-   * Clears the message queue for a task and rejects any pending request resolvers.
-   * @param taskId The task ID whose queue should be cleared
-   * @param sessionId Optional session ID for binding the operation to a specific session
-   */
-  async _clearTaskQueue(taskId, sessionId) {
-    if (this._taskMessageQueue) {
-      const messages = await this._taskMessageQueue.dequeueAll(taskId, sessionId);
-      for (const message of messages) {
-        if (message.type === "request" && isJSONRPCRequest(message.message)) {
-          const requestId = message.message.id;
-          const resolver = this._requestResolvers.get(requestId);
-          if (resolver) {
-            resolver(new McpError(ErrorCode.InternalError, "Task cancelled or completed"));
-            this._requestResolvers.delete(requestId);
-          } else {
-            this._onerror(new Error(`Resolver missing for request ${requestId} during task ${taskId} cleanup`));
-          }
-        }
-      }
-    }
-  }
-  /**
-   * Waits for a task update (new messages or status change) with abort signal support.
-   * Uses polling to check for updates at the task's configured poll interval.
-   * @param taskId The task ID to wait for
-   * @param signal Abort signal to cancel the wait
-   * @returns Promise that resolves when an update occurs or rejects if aborted
-   */
-  async _waitForTaskUpdate(taskId, signal) {
-    let interval = this._options?.defaultTaskPollInterval ?? 1e3;
-    try {
-      const task = await this._taskStore?.getTask(taskId);
-      if (task?.pollInterval) {
-        interval = task.pollInterval;
-      }
-    } catch {
-    }
-    return new Promise((resolve2, reject) => {
-      if (signal.aborted) {
-        reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
-        return;
-      }
-      const timeoutId = setTimeout(resolve2, interval);
-      signal.addEventListener("abort", () => {
-        clearTimeout(timeoutId);
-        reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
-      }, { once: true });
-    });
-  }
-  requestTaskStore(request, sessionId) {
-    const taskStore = this._taskStore;
-    if (!taskStore) {
-      throw new Error("No task store configured");
-    }
-    return {
-      createTask: async (taskParams) => {
-        if (!request) {
-          throw new Error("No request provided");
-        }
-        return await taskStore.createTask(taskParams, request.id, {
-          method: request.method,
-          params: request.params
-        }, sessionId);
-      },
-      getTask: async (taskId) => {
-        const task = await taskStore.getTask(taskId, sessionId);
-        if (!task) {
-          throw new McpError(ErrorCode.InvalidParams, "Failed to retrieve task: Task not found");
-        }
-        return task;
-      },
-      storeTaskResult: async (taskId, status, result) => {
-        await taskStore.storeTaskResult(taskId, status, result, sessionId);
-        const task = await taskStore.getTask(taskId, sessionId);
-        if (task) {
-          const notification = TaskStatusNotificationSchema.parse({
-            method: "notifications/tasks/status",
-            params: task
-          });
-          await this.notification(notification);
-          if (isTerminal(task.status)) {
-            this._cleanupTaskProgressHandler(taskId);
-          }
-        }
-      },
-      getTaskResult: (taskId) => {
-        return taskStore.getTaskResult(taskId, sessionId);
-      },
-      updateTaskStatus: async (taskId, status, statusMessage) => {
-        const task = await taskStore.getTask(taskId, sessionId);
-        if (!task) {
-          throw new McpError(ErrorCode.InvalidParams, `Task "${taskId}" not found - it may have been cleaned up`);
-        }
-        if (isTerminal(task.status)) {
-          throw new McpError(ErrorCode.InvalidParams, `Cannot update task "${taskId}" from terminal status "${task.status}" to "${status}". Terminal states (completed, failed, cancelled) cannot transition to other states.`);
-        }
-        await taskStore.updateTaskStatus(taskId, status, statusMessage, sessionId);
-        const updatedTask = await taskStore.getTask(taskId, sessionId);
-        if (updatedTask) {
-          const notification = TaskStatusNotificationSchema.parse({
-            method: "notifications/tasks/status",
-            params: updatedTask
-          });
-          await this.notification(notification);
-          if (isTerminal(updatedTask.status)) {
-            this._cleanupTaskProgressHandler(taskId);
-          }
-        }
-      },
-      listTasks: (cursor) => {
-        return taskStore.listTasks(cursor, sessionId);
-      }
-    };
-  }
-};
-function isPlainObject2(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-function mergeCapabilities(base, additional) {
-  const result = { ...base };
-  for (const key in additional) {
-    const k = key;
-    const addValue = additional[k];
-    if (addValue === void 0)
-      continue;
-    const baseValue = result[k];
-    if (isPlainObject2(baseValue) && isPlainObject2(addValue)) {
-      result[k] = { ...baseValue, ...addValue };
-    } else {
-      result[k] = addValue;
-    }
-  }
-  return result;
-}
-
 // ../agent-index-filesystem/node_modules/@modelcontextprotocol/sdk/dist/esm/validation/ajv-provider.js
-var import_ajv = __toESM(require_ajv(), 1);
 var import_ajv_formats = __toESM(require_dist(), 1);
-function createDefaultAjvInstance() {
-  const ajv = new import_ajv.default({
-    strict: false,
-    validateFormats: true,
-    validateSchema: false,
-    allErrors: true
-  });
-  const addFormats = import_ajv_formats.default;
-  addFormats(ajv);
-  return ajv;
-}
-var AjvJsonSchemaValidator = class {
-  /**
-   * Create an AJV validator
-   *
-   * @param ajv - Optional pre-configured AJV instance. If not provided, a default instance will be created.
-   *
-   * @example
-   * ```typescript
-   * // Use default configuration (recommended for most cases)
-   * import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
-   * const validator = new AjvJsonSchemaValidator();
-   *
-   * // Or provide custom AJV instance for advanced configuration
-   * import { Ajv } from 'ajv';
-   * import addFormats from 'ajv-formats';
-   *
-   * const ajv = new Ajv({ validateFormats: true });
-   * addFormats(ajv);
-   * const validator = new AjvJsonSchemaValidator(ajv);
-   * ```
-   */
-  constructor(ajv) {
-    this._ajv = ajv ?? createDefaultAjvInstance();
-  }
-  /**
-   * Create a validator for the given JSON Schema
-   *
-   * The validator is compiled once and can be reused multiple times.
-   * If the schema has an $id, it will be cached by AJV automatically.
-   *
-   * @param schema - Standard JSON Schema object
-   * @returns A validator function that validates input data
-   */
-  getValidator(schema) {
-    const ajvValidator = "$id" in schema && typeof schema.$id === "string" ? this._ajv.getSchema(schema.$id) ?? this._ajv.compile(schema) : this._ajv.compile(schema);
-    return (input) => {
-      const valid = ajvValidator(input);
-      if (valid) {
-        return {
-          valid: true,
-          data: input,
-          errorMessage: void 0
-        };
-      } else {
-        return {
-          valid: false,
-          data: void 0,
-          errorMessage: this._ajv.errorsText(ajvValidator.errors)
-        };
-      }
-    };
-  }
-};
-
-// ../agent-index-filesystem/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/server.js
-var ExperimentalServerTasks = class {
-  constructor(_server) {
-    this._server = _server;
-  }
-  /**
-   * Sends a request and returns an AsyncGenerator that yields response messages.
-   * The generator is guaranteed to end with either a 'result' or 'error' message.
-   *
-   * This method provides streaming access to request processing, allowing you to
-   * observe intermediate task status updates for task-augmented requests.
-   *
-   * @param request - The request to send
-   * @param resultSchema - Zod schema for validating the result
-   * @param options - Optional request options (timeout, signal, task creation params, etc.)
-   * @returns AsyncGenerator that yields ResponseMessage objects
-   *
-   * @experimental
-   */
-  requestStream(request, resultSchema, options) {
-    return this._server.requestStream(request, resultSchema, options);
-  }
-  /**
-   * Sends a sampling request and returns an AsyncGenerator that yields response messages.
-   * The generator is guaranteed to end with either a 'result' or 'error' message.
-   *
-   * For task-augmented requests, yields 'taskCreated' and 'taskStatus' messages
-   * before the final result.
-   *
-   * @example
-   * ```typescript
-   * const stream = server.experimental.tasks.createMessageStream({
-   *     messages: [{ role: 'user', content: { type: 'text', text: 'Hello' } }],
-   *     maxTokens: 100
-   * }, {
-   *     onprogress: (progress) => {
-   *         // Handle streaming tokens via progress notifications
-   *         console.log('Progress:', progress.message);
-   *     }
-   * });
-   *
-   * for await (const message of stream) {
-   *     switch (message.type) {
-   *         case 'taskCreated':
-   *             console.log('Task created:', message.task.taskId);
-   *             break;
-   *         case 'taskStatus':
-   *             console.log('Task status:', message.task.status);
-   *             break;
-   *         case 'result':
-   *             console.log('Final result:', message.result);
-   *             break;
-   *         case 'error':
-   *             console.error('Error:', message.error);
-   *             break;
-   *     }
-   * }
-   * ```
-   *
-   * @param params - The sampling request parameters
-   * @param options - Optional request options (timeout, signal, task creation params, onprogress, etc.)
-   * @returns AsyncGenerator that yields ResponseMessage objects
-   *
-   * @experimental
-   */
-  createMessageStream(params, options) {
-    const clientCapabilities = this._server.getClientCapabilities();
-    if ((params.tools || params.toolChoice) && !clientCapabilities?.sampling?.tools) {
-      throw new Error("Client does not support sampling tools capability.");
-    }
-    if (params.messages.length > 0) {
-      const lastMessage = params.messages[params.messages.length - 1];
-      const lastContent = Array.isArray(lastMessage.content) ? lastMessage.content : [lastMessage.content];
-      const hasToolResults = lastContent.some((c) => c.type === "tool_result");
-      const previousMessage = params.messages.length > 1 ? params.messages[params.messages.length - 2] : void 0;
-      const previousContent = previousMessage ? Array.isArray(previousMessage.content) ? previousMessage.content : [previousMessage.content] : [];
-      const hasPreviousToolUse = previousContent.some((c) => c.type === "tool_use");
-      if (hasToolResults) {
-        if (lastContent.some((c) => c.type !== "tool_result")) {
-          throw new Error("The last message must contain only tool_result content if any is present");
-        }
-        if (!hasPreviousToolUse) {
-          throw new Error("tool_result blocks are not matching any tool_use from the previous message");
-        }
-      }
-      if (hasPreviousToolUse) {
-        const toolUseIds = new Set(previousContent.filter((c) => c.type === "tool_use").map((c) => c.id));
-        const toolResultIds = new Set(lastContent.filter((c) => c.type === "tool_result").map((c) => c.toolUseId));
-        if (toolUseIds.size !== toolResultIds.size || ![...toolUseIds].every((id) => toolResultIds.has(id))) {
-          throw new Error("ids of tool_result blocks and tool_use blocks from previous message do not match");
-        }
-      }
-    }
-    return this.requestStream({
-      method: "sampling/createMessage",
-      params
-    }, CreateMessageResultSchema, options);
-  }
-  /**
-   * Sends an elicitation request and returns an AsyncGenerator that yields response messages.
-   * The generator is guaranteed to end with either a 'result' or 'error' message.
-   *
-   * For task-augmented requests (especially URL-based elicitation), yields 'taskCreated'
-   * and 'taskStatus' messages before the final result.
-   *
-   * @example
-   * ```typescript
-   * const stream = server.experimental.tasks.elicitInputStream({
-   *     mode: 'url',
-   *     message: 'Please authenticate',
-   *     elicitationId: 'auth-123',
-   *     url: 'https://example.com/auth'
-   * }, {
-   *     task: { ttl: 300000 } // Task-augmented for long-running auth flow
-   * });
-   *
-   * for await (const message of stream) {
-   *     switch (message.type) {
-   *         case 'taskCreated':
-   *             console.log('Task created:', message.task.taskId);
-   *             break;
-   *         case 'taskStatus':
-   *             console.log('Task status:', message.task.status);
-   *             break;
-   *         case 'result':
-   *             console.log('User action:', message.result.action);
-   *             break;
-   *         case 'error':
-   *             console.error('Error:', message.error);
-   *             break;
-   *     }
-   * }
-   * ```
-   *
-   * @param params - The elicitation request parameters
-   * @param options - Optional request options (timeout, signal, task creation params, etc.)
-   * @returns AsyncGenerator that yields ResponseMessage objects
-   *
-   * @experimental
-   */
-  elicitInputStream(params, options) {
-    const clientCapabilities = this._server.getClientCapabilities();
-    const mode = params.mode ?? "form";
-    switch (mode) {
-      case "url": {
-        if (!clientCapabilities?.elicitation?.url) {
-          throw new Error("Client does not support url elicitation.");
-        }
-        break;
-      }
-      case "form": {
-        if (!clientCapabilities?.elicitation?.form) {
-          throw new Error("Client does not support form elicitation.");
-        }
-        break;
-      }
-    }
-    const normalizedParams = mode === "form" && params.mode === void 0 ? { ...params, mode: "form" } : params;
-    return this.requestStream({
-      method: "elicitation/create",
-      params: normalizedParams
-    }, ElicitResultSchema, options);
-  }
-  /**
-   * Gets the current status of a task.
-   *
-   * @param taskId - The task identifier
-   * @param options - Optional request options
-   * @returns The task status
-   *
-   * @experimental
-   */
-  async getTask(taskId, options) {
-    return this._server.getTask({ taskId }, options);
-  }
-  /**
-   * Retrieves the result of a completed task.
-   *
-   * @param taskId - The task identifier
-   * @param resultSchema - Zod schema for validating the result
-   * @param options - Optional request options
-   * @returns The task result
-   *
-   * @experimental
-   */
-  async getTaskResult(taskId, resultSchema, options) {
-    return this._server.getTaskResult({ taskId }, resultSchema, options);
-  }
-  /**
-   * Lists tasks with optional pagination.
-   *
-   * @param cursor - Optional pagination cursor
-   * @param options - Optional request options
-   * @returns List of tasks with optional next cursor
-   *
-   * @experimental
-   */
-  async listTasks(cursor, options) {
-    return this._server.listTasks(cursor ? { cursor } : void 0, options);
-  }
-  /**
-   * Cancels a running task.
-   *
-   * @param taskId - The task identifier
-   * @param options - Optional request options
-   *
-   * @experimental
-   */
-  async cancelTask(taskId, options) {
-    return this._server.cancelTask({ taskId }, options);
-  }
-};
-
-// ../agent-index-filesystem/node_modules/@modelcontextprotocol/sdk/dist/esm/experimental/tasks/helpers.js
-function assertToolsCallTaskCapability(requests, method, entityName) {
-  if (!requests) {
-    throw new Error(`${entityName} does not support task creation (required for ${method})`);
-  }
-  switch (method) {
-    case "tools/call":
-      if (!requests.tools?.call) {
-        throw new Error(`${entityName} does not support task creation for tools/call (required for ${method})`);
-      }
-      break;
-    default:
-      break;
-  }
-}
-function assertClientRequestTaskCapability(requests, method, entityName) {
-  if (!requests) {
-    throw new Error(`${entityName} does not support task creation (required for ${method})`);
-  }
-  switch (method) {
-    case "sampling/createMessage":
-      if (!requests.sampling?.createMessage) {
-        throw new Error(`${entityName} does not support task creation for sampling/createMessage (required for ${method})`);
-      }
-      break;
-    case "elicitation/create":
-      if (!requests.elicitation?.create) {
-        throw new Error(`${entityName} does not support task creation for elicitation/create (required for ${method})`);
-      }
-      break;
-    default:
-      break;
-  }
-}
-
-// ../agent-index-filesystem/node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
-var Server = class extends Protocol {
-  /**
-   * Initializes this server with the given name and version information.
-   */
-  constructor(_serverInfo, options) {
-    super(options);
-    this._serverInfo = _serverInfo;
-    this._loggingLevels = /* @__PURE__ */ new Map();
-    this.LOG_LEVEL_SEVERITY = new Map(LoggingLevelSchema.options.map((level, index) => [level, index]));
-    this.isMessageIgnored = (level, sessionId) => {
-      const currentLevel = this._loggingLevels.get(sessionId);
-      return currentLevel ? this.LOG_LEVEL_SEVERITY.get(level) < this.LOG_LEVEL_SEVERITY.get(currentLevel) : false;
-    };
-    this._capabilities = options?.capabilities ?? {};
-    this._instructions = options?.instructions;
-    this._jsonSchemaValidator = options?.jsonSchemaValidator ?? new AjvJsonSchemaValidator();
-    this.setRequestHandler(InitializeRequestSchema, (request) => this._oninitialize(request));
-    this.setNotificationHandler(InitializedNotificationSchema, () => this.oninitialized?.());
-    if (this._capabilities.logging) {
-      this.setRequestHandler(SetLevelRequestSchema, async (request, extra) => {
-        const transportSessionId = extra.sessionId || extra.requestInfo?.headers["mcp-session-id"] || void 0;
-        const { level } = request.params;
-        const parseResult = LoggingLevelSchema.safeParse(level);
-        if (parseResult.success) {
-          this._loggingLevels.set(transportSessionId, parseResult.data);
-        }
-        return {};
-      });
-    }
-  }
-  /**
-   * Access experimental features.
-   *
-   * WARNING: These APIs are experimental and may change without notice.
-   *
-   * @experimental
-   */
-  get experimental() {
-    if (!this._experimental) {
-      this._experimental = {
-        tasks: new ExperimentalServerTasks(this)
-      };
-    }
-    return this._experimental;
-  }
-  /**
-   * Registers new capabilities. This can only be called before connecting to a transport.
-   *
-   * The new capabilities will be merged with any existing capabilities previously given (e.g., at initialization).
-   */
-  registerCapabilities(capabilities) {
-    if (this.transport) {
-      throw new Error("Cannot register capabilities after connecting to transport");
-    }
-    this._capabilities = mergeCapabilities(this._capabilities, capabilities);
-  }
-  /**
-   * Override request handler registration to enforce server-side validation for tools/call.
-   */
-  setRequestHandler(requestSchema, handler) {
-    const shape = getObjectShape(requestSchema);
-    const methodSchema = shape?.method;
-    if (!methodSchema) {
-      throw new Error("Schema is missing a method literal");
-    }
-    let methodValue;
-    if (isZ4Schema(methodSchema)) {
-      const v4Schema = methodSchema;
-      const v4Def = v4Schema._zod?.def;
-      methodValue = v4Def?.value ?? v4Schema.value;
-    } else {
-      const v3Schema = methodSchema;
-      const legacyDef = v3Schema._def;
-      methodValue = legacyDef?.value ?? v3Schema.value;
-    }
-    if (typeof methodValue !== "string") {
-      throw new Error("Schema method literal must be a string");
-    }
-    const method = methodValue;
-    if (method === "tools/call") {
-      const wrappedHandler = async (request, extra) => {
-        const validatedRequest = safeParse2(CallToolRequestSchema, request);
-        if (!validatedRequest.success) {
-          const errorMessage = validatedRequest.error instanceof Error ? validatedRequest.error.message : String(validatedRequest.error);
-          throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call request: ${errorMessage}`);
-        }
-        const { params } = validatedRequest.data;
-        const result = await Promise.resolve(handler(request, extra));
-        if (params.task) {
-          const taskValidationResult = safeParse2(CreateTaskResultSchema, result);
-          if (!taskValidationResult.success) {
-            const errorMessage = taskValidationResult.error instanceof Error ? taskValidationResult.error.message : String(taskValidationResult.error);
-            throw new McpError(ErrorCode.InvalidParams, `Invalid task creation result: ${errorMessage}`);
-          }
-          return taskValidationResult.data;
-        }
-        const validationResult = safeParse2(CallToolResultSchema, result);
-        if (!validationResult.success) {
-          const errorMessage = validationResult.error instanceof Error ? validationResult.error.message : String(validationResult.error);
-          throw new McpError(ErrorCode.InvalidParams, `Invalid tools/call result: ${errorMessage}`);
-        }
-        return validationResult.data;
-      };
-      return super.setRequestHandler(requestSchema, wrappedHandler);
-    }
-    return super.setRequestHandler(requestSchema, handler);
-  }
-  assertCapabilityForMethod(method) {
-    switch (method) {
-      case "sampling/createMessage":
-        if (!this._clientCapabilities?.sampling) {
-          throw new Error(`Client does not support sampling (required for ${method})`);
-        }
-        break;
-      case "elicitation/create":
-        if (!this._clientCapabilities?.elicitation) {
-          throw new Error(`Client does not support elicitation (required for ${method})`);
-        }
-        break;
-      case "roots/list":
-        if (!this._clientCapabilities?.roots) {
-          throw new Error(`Client does not support listing roots (required for ${method})`);
-        }
-        break;
-      case "ping":
-        break;
-    }
-  }
-  assertNotificationCapability(method) {
-    switch (method) {
-      case "notifications/message":
-        if (!this._capabilities.logging) {
-          throw new Error(`Server does not support logging (required for ${method})`);
-        }
-        break;
-      case "notifications/resources/updated":
-      case "notifications/resources/list_changed":
-        if (!this._capabilities.resources) {
-          throw new Error(`Server does not support notifying about resources (required for ${method})`);
-        }
-        break;
-      case "notifications/tools/list_changed":
-        if (!this._capabilities.tools) {
-          throw new Error(`Server does not support notifying of tool list changes (required for ${method})`);
-        }
-        break;
-      case "notifications/prompts/list_changed":
-        if (!this._capabilities.prompts) {
-          throw new Error(`Server does not support notifying of prompt list changes (required for ${method})`);
-        }
-        break;
-      case "notifications/elicitation/complete":
-        if (!this._clientCapabilities?.elicitation?.url) {
-          throw new Error(`Client does not support URL elicitation (required for ${method})`);
-        }
-        break;
-      case "notifications/cancelled":
-        break;
-      case "notifications/progress":
-        break;
-    }
-  }
-  assertRequestHandlerCapability(method) {
-    if (!this._capabilities) {
-      return;
-    }
-    switch (method) {
-      case "completion/complete":
-        if (!this._capabilities.completions) {
-          throw new Error(`Server does not support completions (required for ${method})`);
-        }
-        break;
-      case "logging/setLevel":
-        if (!this._capabilities.logging) {
-          throw new Error(`Server does not support logging (required for ${method})`);
-        }
-        break;
-      case "prompts/get":
-      case "prompts/list":
-        if (!this._capabilities.prompts) {
-          throw new Error(`Server does not support prompts (required for ${method})`);
-        }
-        break;
-      case "resources/list":
-      case "resources/templates/list":
-      case "resources/read":
-        if (!this._capabilities.resources) {
-          throw new Error(`Server does not support resources (required for ${method})`);
-        }
-        break;
-      case "tools/call":
-      case "tools/list":
-        if (!this._capabilities.tools) {
-          throw new Error(`Server does not support tools (required for ${method})`);
-        }
-        break;
-      case "tasks/get":
-      case "tasks/list":
-      case "tasks/result":
-      case "tasks/cancel":
-        if (!this._capabilities.tasks) {
-          throw new Error(`Server does not support tasks capability (required for ${method})`);
-        }
-        break;
-      case "ping":
-      case "initialize":
-        break;
-    }
-  }
-  assertTaskCapability(method) {
-    assertClientRequestTaskCapability(this._clientCapabilities?.tasks?.requests, method, "Client");
-  }
-  assertTaskHandlerCapability(method) {
-    if (!this._capabilities) {
-      return;
-    }
-    assertToolsCallTaskCapability(this._capabilities.tasks?.requests, method, "Server");
-  }
-  async _oninitialize(request) {
-    const requestedVersion = request.params.protocolVersion;
-    this._clientCapabilities = request.params.capabilities;
-    this._clientVersion = request.params.clientInfo;
-    const protocolVersion = SUPPORTED_PROTOCOL_VERSIONS.includes(requestedVersion) ? requestedVersion : LATEST_PROTOCOL_VERSION;
-    return {
-      protocolVersion,
-      capabilities: this.getCapabilities(),
-      serverInfo: this._serverInfo,
-      ...this._instructions && { instructions: this._instructions }
-    };
-  }
-  /**
-   * After initialization has completed, this will be populated with the client's reported capabilities.
-   */
-  getClientCapabilities() {
-    return this._clientCapabilities;
-  }
-  /**
-   * After initialization has completed, this will be populated with information about the client's name and version.
-   */
-  getClientVersion() {
-    return this._clientVersion;
-  }
-  getCapabilities() {
-    return this._capabilities;
-  }
-  async ping() {
-    return this.request({ method: "ping" }, EmptyResultSchema);
-  }
-  // Implementation
-  async createMessage(params, options) {
-    if (params.tools || params.toolChoice) {
-      if (!this._clientCapabilities?.sampling?.tools) {
-        throw new Error("Client does not support sampling tools capability.");
-      }
-    }
-    if (params.messages.length > 0) {
-      const lastMessage = params.messages[params.messages.length - 1];
-      const lastContent = Array.isArray(lastMessage.content) ? lastMessage.content : [lastMessage.content];
-      const hasToolResults = lastContent.some((c) => c.type === "tool_result");
-      const previousMessage = params.messages.length > 1 ? params.messages[params.messages.length - 2] : void 0;
-      const previousContent = previousMessage ? Array.isArray(previousMessage.content) ? previousMessage.content : [previousMessage.content] : [];
-      const hasPreviousToolUse = previousContent.some((c) => c.type === "tool_use");
-      if (hasToolResults) {
-        if (lastContent.some((c) => c.type !== "tool_result")) {
-          throw new Error("The last message must contain only tool_result content if any is present");
-        }
-        if (!hasPreviousToolUse) {
-          throw new Error("tool_result blocks are not matching any tool_use from the previous message");
-        }
-      }
-      if (hasPreviousToolUse) {
-        const toolUseIds = new Set(previousContent.filter((c) => c.type === "tool_use").map((c) => c.id));
-        const toolResultIds = new Set(lastContent.filter((c) => c.type === "tool_result").map((c) => c.toolUseId));
-        if (toolUseIds.size !== toolResultIds.size || ![...toolUseIds].every((id) => toolResultIds.has(id))) {
-          throw new Error("ids of tool_result blocks and tool_use blocks from previous message do not match");
-        }
-      }
-    }
-    if (params.tools) {
-      return this.request({ method: "sampling/createMessage", params }, CreateMessageResultWithToolsSchema, options);
-    }
-    return this.request({ method: "sampling/createMessage", params }, CreateMessageResultSchema, options);
-  }
-  /**
-   * Creates an elicitation request for the given parameters.
-   * For backwards compatibility, `mode` may be omitted for form requests and will default to `'form'`.
-   * @param params The parameters for the elicitation request.
-   * @param options Optional request options.
-   * @returns The result of the elicitation request.
-   */
-  async elicitInput(params, options) {
-    const mode = params.mode ?? "form";
-    switch (mode) {
-      case "url": {
-        if (!this._clientCapabilities?.elicitation?.url) {
-          throw new Error("Client does not support url elicitation.");
-        }
-        const urlParams = params;
-        return this.request({ method: "elicitation/create", params: urlParams }, ElicitResultSchema, options);
-      }
-      case "form": {
-        if (!this._clientCapabilities?.elicitation?.form) {
-          throw new Error("Client does not support form elicitation.");
-        }
-        const formParams = params.mode === "form" ? params : { ...params, mode: "form" };
-        const result = await this.request({ method: "elicitation/create", params: formParams }, ElicitResultSchema, options);
-        if (result.action === "accept" && result.content && formParams.requestedSchema) {
-          try {
-            const validator = this._jsonSchemaValidator.getValidator(formParams.requestedSchema);
-            const validationResult = validator(result.content);
-            if (!validationResult.valid) {
-              throw new McpError(ErrorCode.InvalidParams, `Elicitation response content does not match requested schema: ${validationResult.errorMessage}`);
-            }
-          } catch (error2) {
-            if (error2 instanceof McpError) {
-              throw error2;
-            }
-            throw new McpError(ErrorCode.InternalError, `Error validating elicitation response: ${error2 instanceof Error ? error2.message : String(error2)}`);
-          }
-        }
-        return result;
-      }
-    }
-  }
-  /**
-   * Creates a reusable callback that, when invoked, will send a `notifications/elicitation/complete`
-   * notification for the specified elicitation ID.
-   *
-   * @param elicitationId The ID of the elicitation to mark as complete.
-   * @param options Optional notification options. Useful when the completion notification should be related to a prior request.
-   * @returns A function that emits the completion notification when awaited.
-   */
-  createElicitationCompletionNotifier(elicitationId, options) {
-    if (!this._clientCapabilities?.elicitation?.url) {
-      throw new Error("Client does not support URL elicitation (required for notifications/elicitation/complete)");
-    }
-    return () => this.notification({
-      method: "notifications/elicitation/complete",
-      params: {
-        elicitationId
-      }
-    }, options);
-  }
-  async listRoots(params, options) {
-    return this.request({ method: "roots/list", params }, ListRootsResultSchema, options);
-  }
-  /**
-   * Sends a logging message to the client, if connected.
-   * Note: You only need to send the parameters object, not the entire JSON RPC message
-   * @see LoggingMessageNotification
-   * @param params
-   * @param sessionId optional for stateless and backward compatibility
-   */
-  async sendLoggingMessage(params, sessionId) {
-    if (this._capabilities.logging) {
-      if (!this.isMessageIgnored(params.level, sessionId)) {
-        return this.notification({ method: "notifications/message", params });
-      }
-    }
-  }
-  async sendResourceUpdated(params) {
-    return this.notification({
-      method: "notifications/resources/updated",
-      params
-    });
-  }
-  async sendResourceListChanged() {
-    return this.notification({
-      method: "notifications/resources/list_changed"
-    });
-  }
-  async sendToolListChanged() {
-    return this.notification({ method: "notifications/tools/list_changed" });
-  }
-  async sendPromptListChanged() {
-    return this.notification({ method: "notifications/prompts/list_changed" });
-  }
-};
-
-// ../agent-index-filesystem/node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
-import process3 from "node:process";
-
-// ../agent-index-filesystem/node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
-var ReadBuffer = class {
-  append(chunk) {
-    this._buffer = this._buffer ? Buffer.concat([this._buffer, chunk]) : chunk;
-  }
-  readMessage() {
-    if (!this._buffer) {
-      return null;
-    }
-    const index = this._buffer.indexOf("\n");
-    if (index === -1) {
-      return null;
-    }
-    const line = this._buffer.toString("utf8", 0, index).replace(/\r$/, "");
-    this._buffer = this._buffer.subarray(index + 1);
-    return deserializeMessage(line);
-  }
-  clear() {
-    this._buffer = void 0;
-  }
-};
-function deserializeMessage(line) {
-  return JSONRPCMessageSchema.parse(JSON.parse(line));
-}
-function serializeMessage(message) {
-  return JSON.stringify(message) + "\n";
-}
-
-// ../agent-index-filesystem/node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
-var StdioServerTransport = class {
-  constructor(_stdin = process3.stdin, _stdout = process3.stdout) {
-    this._stdin = _stdin;
-    this._stdout = _stdout;
-    this._readBuffer = new ReadBuffer();
-    this._started = false;
-    this._ondata = (chunk) => {
-      this._readBuffer.append(chunk);
-      this.processReadBuffer();
-    };
-    this._onerror = (error2) => {
-      this.onerror?.(error2);
-    };
-  }
-  /**
-   * Starts listening for messages on stdin.
-   */
-  async start() {
-    if (this._started) {
-      throw new Error("StdioServerTransport already started! If using Server class, note that connect() calls start() automatically.");
-    }
-    this._started = true;
-    this._stdin.on("data", this._ondata);
-    this._stdin.on("error", this._onerror);
-  }
-  processReadBuffer() {
-    while (true) {
-      try {
-        const message = this._readBuffer.readMessage();
-        if (message === null) {
-          break;
-        }
-        this.onmessage?.(message);
-      } catch (error2) {
-        this.onerror?.(error2);
-      }
-    }
-  }
-  async close() {
-    this._stdin.off("data", this._ondata);
-    this._stdin.off("error", this._onerror);
-    const remainingDataListeners = this._stdin.listenerCount("data");
-    if (remainingDataListeners === 0) {
-      this._stdin.pause();
-    }
-    this._readBuffer.clear();
-    this.onclose?.();
-  }
-  send(message) {
-    return new Promise((resolve2) => {
-      const json2 = serializeMessage(message);
-      if (this._stdout.write(json2)) {
-        resolve2();
-      } else {
-        this._stdout.once("drain", resolve2);
-      }
-    });
-  }
-};
 
 // ../agent-index-filesystem/src/errors.js
 var AifsError = class extends Error {
@@ -43264,258 +41399,18 @@ var BackendError = class extends AifsError {
   }
 };
 
-// ../agent-index-filesystem/src/server.js
-var TOOLS = [
-  {
-    name: "aifs_read",
-    description: "Read file content at a path on the remote filesystem.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: {
-          type: "string",
-          description: 'Path relative to remote filesystem root (e.g., "/org-config.json")'
-        }
-      },
-      required: ["path"]
-    }
-  },
-  {
-    name: "aifs_write",
-    description: "Write content to a path on the remote filesystem. Creates parent directories as needed.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: {
-          type: "string",
-          description: "Path relative to remote filesystem root"
-        },
-        content: {
-          type: "string",
-          description: 'File content (UTF-8 text, or base64-encoded with "base64:" prefix for binary)'
-        }
-      },
-      required: ["path", "content"]
-    }
-  },
-  {
-    name: "aifs_list",
-    description: "List directory contents at a path on the remote filesystem.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: {
-          type: "string",
-          description: "Directory path relative to remote filesystem root"
-        },
-        recursive: {
-          type: "boolean",
-          description: "If true, return full subtree. Use sparingly.",
-          default: false
-        }
-      },
-      required: ["path"]
-    }
-  },
-  {
-    name: "aifs_exists",
-    description: "Check whether a path exists without reading content. Lightweight.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: {
-          type: "string",
-          description: "Path to check"
-        }
-      },
-      required: ["path"]
-    }
-  },
-  {
-    name: "aifs_stat",
-    description: "Get file metadata (size, modified date) without reading content.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: {
-          type: "string",
-          description: "Path to get metadata for"
-        }
-      },
-      required: ["path"]
-    }
-  },
-  {
-    name: "aifs_delete",
-    description: "Delete a file or empty directory.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        path: {
-          type: "string",
-          description: "Path to delete"
-        }
-      },
-      required: ["path"]
-    }
-  },
-  {
-    name: "aifs_copy",
-    description: "Copy a file within the remote filesystem.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        source: {
-          type: "string",
-          description: "Source path"
-        },
-        destination: {
-          type: "string",
-          description: "Destination path"
-        }
-      },
-      required: ["source", "destination"]
-    }
-  },
-  {
-    name: "aifs_auth_status",
-    description: "Check current authentication state. Always succeeds.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      required: []
-    }
-  },
-  {
-    name: "aifs_authenticate",
-    description: "Initiate or complete authentication to the remote filesystem.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        action: {
-          type: "string",
-          enum: ["start", "complete"],
-          description: '"start" initiates auth and returns instructions. "complete" finishes with an auth code.',
-          default: "start"
-        },
-        auth_code: {
-          type: "string",
-          description: 'Authorization code from OAuth callback (used with action="complete")'
-        }
-      },
-      required: []
-    }
-  }
-];
-function createServer(adapter, config2) {
-  const server = new Server(
-    {
-      name: "agent-index-filesystem",
-      version: "1.0.0"
-    },
-    {
-      capabilities: {
-        tools: {}
-      }
-    }
-  );
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS
-  }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    try {
-      const result = await routeToolCall(adapter, name, args || {});
-      return {
-        content: [
-          {
-            type: "text",
-            text: typeof result === "string" ? result : JSON.stringify(result, null, 2)
-          }
-        ]
-      };
-    } catch (err) {
-      if (err instanceof AifsError) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: JSON.stringify(err.toResponse(), null, 2)
-            }
-          ],
-          isError: true
-        };
-      }
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({
-              error: "BACKEND_ERROR",
-              message: err.message
-            }, null, 2)
-          }
-        ],
-        isError: true
-      };
-    }
-  });
-  return server;
-}
-async function routeToolCall(adapter, toolName, args) {
-  switch (toolName) {
-    case "aifs_read":
-      return adapter.read(args.path);
-    case "aifs_write": {
-      await adapter.write(args.path, args.content);
-      return { success: true, path: args.path };
-    }
-    case "aifs_list": {
-      const entries = await adapter.list(args.path, args.recursive ?? false);
-      return { entries };
-    }
-    case "aifs_exists":
-      return adapter.exists(args.path);
-    case "aifs_stat":
-      return adapter.stat(args.path);
-    case "aifs_delete": {
-      await adapter.delete(args.path);
-      return { success: true };
-    }
-    case "aifs_copy": {
-      await adapter.copy(args.source, args.destination);
-      return { success: true };
-    }
-    case "aifs_auth_status":
-      return adapter.getAuthStatus();
-    case "aifs_authenticate": {
-      const action = args.action || "start";
-      if (action === "start") {
-        return adapter.startAuth();
-      } else if (action === "complete") {
-        return adapter.completeAuth(args.auth_code);
-      }
-      throw new AifsError("BACKEND_ERROR", `Unknown auth action: ${action}`);
-    }
-    default:
-      throw new AifsError("BACKEND_ERROR", `Unknown tool: ${toolName}`);
-  }
-}
-async function startServer(adapter, config2) {
-  const server = createServer(adapter, config2);
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  return server;
-}
-
 // src/adapters/gdrive.js
 var import_google_auth_library = __toESM(require_src6(), 1);
 var import_drive = __toESM(require_build(), 1);
 var import_oauth2 = __toESM(require_build2(), 1);
-import { readFile as readFile2, writeFile, mkdir } from "node:fs/promises";
+import { readFile as readFile2, writeFile, mkdir, open, unlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { createServer as createServer2 } from "node:http";
 import { dirname as dirname2, join } from "node:path";
 import { URL as URL3 } from "node:url";
+var LOCK_STALE_MS = 3e4;
+var LOCK_POLL_MS = 100;
+var LOCK_TIMEOUT_MS = 6e4;
 var GoogleDriveAdapter = class {
   constructor() {
     this.connection = null;
@@ -43525,6 +41420,7 @@ var GoogleDriveAdapter = class {
     this.drive = null;
     this.pathCache = /* @__PURE__ */ new Map();
     this._folderLocks = /* @__PURE__ */ new Map();
+    this._lockDir = null;
     this._callbackServer = null;
     this._capturedAuthCode = null;
   }
@@ -43545,6 +41441,8 @@ var GoogleDriveAdapter = class {
       "http://localhost:3939/callback"
     );
     this.credentialPath = join(credentialStore, "gdrive.json");
+    this._lockDir = join(credentialStore, "locks");
+    await mkdir(this._lockDir, { recursive: true });
     try {
       this.tokens = JSON.parse(await readFile2(this.credentialPath, "utf-8"));
       this.oauth2Client.setCredentials(this.tokens);
@@ -44062,11 +41960,20 @@ var GoogleDriveAdapter = class {
    * Ensure all parent directories exist, creating them as needed.
    * Returns the ID of the immediate parent folder.
    *
-   * Uses a per-path lock to prevent parallel writes from creating
-   * duplicate folders. Google Drive allows multiple folders with the
-   * same name, so without serialization, concurrent writes to
-   * /email-triage/file1.md and /email-triage/file2.md would each
-   * independently create an /email-triage/ folder.
+   * Two layers of locking prevent duplicate folder creation:
+   *
+   * 1. In-process lock (_folderLocks Map) — fast path for concurrent
+   *    writes within the same adapter instance / Node process.
+   *
+   * 2. Local filesystem lock (_acquirePathLock / _releasePathLock) —
+   *    cross-process safety for when multiple adapter instances (e.g.
+   *    separate MCP server processes spawned by parallel callers) race
+   *    to create the same directory tree on Google Drive.
+   *
+   * Google Drive allows multiple folders with the same name, so without
+   * serialization, concurrent writes to /email-triage/file1.md and
+   * /email-triage/file2.md would each independently create an
+   * /email-triage/ folder.
    */
   async _ensureParentDirs(parentPath) {
     const normalized = this._normalizePath(parentPath);
@@ -44077,13 +41984,34 @@ var GoogleDriveAdapter = class {
     if (existingLock) {
       return existingLock;
     }
-    const lockPromise = this._ensureParentDirsInner(normalized);
+    const lockPromise = this._ensureParentDirsWithFsLock(normalized);
     this._folderLocks.set(normalized, lockPromise);
     try {
       const result = await lockPromise;
       return result;
     } finally {
       this._folderLocks.delete(normalized);
+    }
+  }
+  /**
+   * Wraps _ensureParentDirsInner with a local filesystem lock so that
+   * separate OS processes creating the same directory tree are serialized.
+   */
+  async _ensureParentDirsWithFsLock(normalized) {
+    const segments = normalized.split("/").filter(Boolean);
+    const lockPaths = [];
+    let buildPath = "";
+    for (const segment of segments) {
+      buildPath += `/${segment}`;
+      const lockPath = await this._acquirePathLock(buildPath);
+      lockPaths.push(lockPath);
+    }
+    try {
+      return await this._ensureParentDirsInner(normalized);
+    } finally {
+      for (let i = lockPaths.length - 1; i >= 0; i--) {
+        await this._releasePathLock(lockPaths[i]);
+      }
     }
   }
   /**
@@ -44196,6 +42124,74 @@ var GoogleDriveAdapter = class {
       );
     }
   }
+  // ─── Cross-process path locking ────────────────────────────────────────
+  //
+  // Uses the local filesystem as a shared mutex. Lock files are created
+  // atomically with O_CREAT | O_EXCL so only one process succeeds. Others
+  // poll until the lock is released (file deleted) or stale (older than
+  // LOCK_STALE_MS, indicating a crashed holder).
+  //
+  // Lock files contain the PID and timestamp of the holder for stale
+  // detection. They live in _lockDir (e.g. .agent-index/credentials/locks/).
+  /**
+   * Convert a normalized AIFS path to a lock file path.
+   * Uses a hash to avoid filesystem issues with long/nested paths.
+   */
+  _lockFilePath(normalizedPath) {
+    const hash2 = createHash("sha256").update(normalizedPath).digest("hex").slice(0, 16);
+    const safe = normalizedPath.replace(/[^a-zA-Z0-9]/g, "_").slice(0, 40);
+    return join(this._lockDir, `${safe}-${hash2}.lock`);
+  }
+  /**
+   * Acquire a cross-process lock for the given AIFS path.
+   * Returns the lock file path (needed for release).
+   *
+   * - Attempts atomic file creation (O_CREAT | O_EXCL).
+   * - If the file already exists, checks for staleness, then polls.
+   * - Throws if the lock cannot be acquired within LOCK_TIMEOUT_MS.
+   */
+  async _acquirePathLock(normalizedPath) {
+    const lockFile = this._lockFilePath(normalizedPath);
+    const lockContent = JSON.stringify({ pid: process.pid, ts: Date.now() });
+    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      try {
+        const fh = await open(lockFile, "wx");
+        await fh.writeFile(lockContent);
+        await fh.close();
+        return lockFile;
+      } catch (err) {
+        if (err.code !== "EEXIST")
+          throw err;
+        try {
+          const content = await readFile2(lockFile, "utf-8");
+          const info = JSON.parse(content);
+          if (Date.now() - info.ts > LOCK_STALE_MS) {
+            try {
+              await unlink(lockFile);
+            } catch {
+            }
+            continue;
+          }
+        } catch {
+          continue;
+        }
+        await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
+      }
+    }
+    throw new BackendError(
+      `Timed out waiting for folder lock on path: ${normalizedPath}`
+    );
+  }
+  /**
+   * Release a previously acquired lock.
+   */
+  async _releasePathLock(lockFilePath) {
+    try {
+      await unlink(lockFilePath);
+    } catch {
+    }
+  }
   // ─── Helpers ──────────────────────────────────────────────────────────
   _normalizePath(path) {
     let p = "/" + path.replace(/^\/+/, "").replace(/\/+$/, "");
@@ -44253,34 +42249,171 @@ var GoogleDriveAdapter = class {
   }
 };
 
-// src/index.js
+// src/exec.mjs
+import { readFile as readFile3, writeFile as writeFile2, mkdir as mkdir2 } from "node:fs/promises";
+import { join as join2, dirname as dirname3 } from "node:path";
+var PATH_CACHE_FILENAME = "path-cache.json";
+var PATH_CACHE_MAX_AGE_MS = 30 * 60 * 1e3;
+var PATH_CACHE_MAX_ENTRIES = 2e3;
+async function loadPathCache(credentialStore) {
+  const cachePath = join2(credentialStore, PATH_CACHE_FILENAME);
+  try {
+    const raw = await readFile3(cachePath, "utf-8");
+    const data = JSON.parse(raw);
+    if (data.timestamp && Date.now() - data.timestamp > PATH_CACHE_MAX_AGE_MS) {
+      return /* @__PURE__ */ new Map();
+    }
+    return new Map(Object.entries(data.entries || {}));
+  } catch {
+    return /* @__PURE__ */ new Map();
+  }
+}
+async function savePathCache(credentialStore, pathCache) {
+  const cachePath = join2(credentialStore, PATH_CACHE_FILENAME);
+  const entries = {};
+  let count = 0;
+  for (const [key, value] of pathCache) {
+    if (count >= PATH_CACHE_MAX_ENTRIES)
+      break;
+    entries[key] = value;
+    count++;
+  }
+  const data = {
+    timestamp: Date.now(),
+    entries
+  };
+  try {
+    await mkdir2(dirname3(cachePath), { recursive: true });
+    await writeFile2(cachePath, JSON.stringify(data), "utf-8");
+  } catch {
+  }
+}
+async function routeToolCall(adapter, toolName, args) {
+  switch (toolName) {
+    case "aifs_read":
+      return adapter.read(args.path);
+    case "aifs_write": {
+      await adapter.write(args.path, args.content);
+      return { success: true, path: args.path };
+    }
+    case "aifs_list": {
+      const entries = await adapter.list(args.path, args.recursive ?? false);
+      return { entries };
+    }
+    case "aifs_exists":
+      return adapter.exists(args.path);
+    case "aifs_stat":
+      return adapter.stat(args.path);
+    case "aifs_delete": {
+      await adapter.delete(args.path);
+      return { success: true };
+    }
+    case "aifs_copy": {
+      await adapter.copy(args.source, args.destination);
+      return { success: true };
+    }
+    case "aifs_auth_status":
+      return adapter.getAuthStatus();
+    case "aifs_authenticate": {
+      const action = args.action || "start";
+      if (action === "start") {
+        return adapter.startAuth();
+      } else if (action === "complete") {
+        return adapter.completeAuth(args.auth_code);
+      }
+      throw new AifsError("BACKEND_ERROR", `Unknown auth action: ${action}`);
+    }
+    default:
+      throw new AifsError("BACKEND_ERROR", `Unknown tool: ${toolName}`);
+  }
+}
 async function main() {
+  const args = process.argv.slice(2);
+  if (args.length === 0 || args[0] === "--help" || args[0] === "-h") {
+    console.log(JSON.stringify({
+      usage: "aifs-exec <tool_name> [json_args]",
+      tools: [
+        "aifs_read",
+        "aifs_write",
+        "aifs_list",
+        "aifs_exists",
+        "aifs_stat",
+        "aifs_delete",
+        "aifs_copy",
+        "aifs_auth_status",
+        "aifs_authenticate"
+      ],
+      examples: [
+        `aifs-exec aifs_read '{"path":"/projects/foo/project.md"}'`,
+        `aifs-exec aifs_list '{"path":"/shared/projects"}'`,
+        "aifs-exec aifs_auth_status"
+      ]
+    }, null, 2));
+    process.exit(0);
+  }
+  const toolName = args[0];
+  let toolArgs = {};
+  if (args[1]) {
+    try {
+      toolArgs = JSON.parse(args[1]);
+    } catch (err) {
+      console.log(JSON.stringify({
+        error: "INVALID_ARGS",
+        message: `Failed to parse JSON arguments: ${err.message}`
+      }));
+      process.exit(1);
+    }
+  }
   initEnvironment();
   let config2;
   try {
     config2 = await loadConfig();
   } catch (err) {
-    console.error(`[aifs] Config error: ${err.message}`);
+    console.log(JSON.stringify({
+      error: "CONFIG_ERROR",
+      message: err.message
+    }));
     process.exit(1);
   }
   if (config2.backend !== "gdrive") {
-    console.error(
-      `[aifs] This package (@agent-index/filesystem-gdrive) only supports the "gdrive" backend. Config specifies "${config2.backend}".`
-    );
+    console.log(JSON.stringify({
+      error: "CONFIG_ERROR",
+      message: `This package only supports "gdrive" backend. Config specifies "${config2.backend}".`
+    }));
     process.exit(1);
   }
   const adapter = new GoogleDriveAdapter();
   try {
     await adapter.initialize(config2.connection, config2.auth.credentialStore);
   } catch (err) {
-    console.error(`[aifs] Adapter initialization failed: ${err.message}`);
+    console.log(JSON.stringify({
+      error: "INIT_ERROR",
+      message: `Adapter initialization failed: ${err.message}`
+    }));
     process.exit(1);
   }
+  const cachedPaths = await loadPathCache(config2.auth.credentialStore);
+  for (const [path, entry] of cachedPaths) {
+    if (!adapter.pathCache.has(path)) {
+      adapter.pathCache.set(path, entry);
+    }
+  }
   try {
-    await startServer(adapter, config2);
+    const result = await routeToolCall(adapter, toolName, toolArgs);
+    const output = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+    console.log(output);
   } catch (err) {
-    console.error(`[aifs] Server startup failed: ${err.message}`);
+    if (err instanceof AifsError) {
+      console.log(JSON.stringify(err.toResponse(), null, 2));
+      process.exit(1);
+    }
+    console.log(JSON.stringify({
+      error: "BACKEND_ERROR",
+      message: err.message
+    }, null, 2));
     process.exit(1);
+  } finally {
+    await savePathCache(config2.auth.credentialStore, adapter.pathCache);
   }
 }
 main();

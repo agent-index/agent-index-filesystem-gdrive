@@ -1,12 +1,12 @@
 # agent-index-filesystem-gdrive
 
-Google Drive adapter for the agent-index remote filesystem. Connects the `aifs_*` MCP tool interface to Google Drive and Shared Drives via the Google APIs.
+Google Drive adapter for the agent-index remote filesystem. Implements the `aifs_*` tool interface for Google Drive and Shared Drives via the Google APIs.
 
 ## Overview
 
 This adapter implements the `BackendAdapter` interface from `@agent-index/filesystem` against the Google Drive API. It handles path-to-ID resolution (Drive is ID-based, not path-based), shared drive support, recursive directory creation, and OAuth2 authentication with refresh token persistence.
 
-Members never interact with this package directly. The pre-built bundle is included in the bootstrap zip during org setup and runs as a background MCP server process inside Cowork.
+Members do not interact with this package directly. The adapter handles backend operations when the `aifs_*` tools are called in exec mode.
 
 ## Features
 
@@ -31,26 +31,25 @@ Set by the org admin during `create-org`:
 
 ```bash
 npm install              # Install dependencies
-npm run build            # Bundle, checksum, and stamp adapter.json
-npm run build:bundle     # esbuild only (no metadata stamp)
+npm run build            # Build and verify adapter implementation
 npm test                 # Run tests
 ```
 
-The `npm run build` command produces `dist/server.bundle.js` (a self-contained single-file MCP server) and updates `adapter.json` with the build timestamp and checksum. Commit both files together.
+The build process verifies that the adapter correctly implements the `BackendAdapter` interface and is compatible with the exec-mode `aifs_*` tools.
 
 ## Repository Structure
 
 ```
-├── adapter.json            # Adapter metadata, connection schema, build info
+├── adapter.json            # Adapter metadata and connection schema
 ├── package.json            # Source dependencies and build scripts
 ├── scripts/
-│   └── build.js            # Build pipeline (bundle + checksum + stamp)
+│   └── build.js            # Build and validation
 ├── src/
 │   ├── index.js            # Entry point
 │   └── adapters/
 │       └── gdrive.js       # BackendAdapter implementation
 └── dist/
-    └── server.bundle.js    # Pre-built bundle (committed to repo)
+    └── adapter.js          # Compiled adapter
 ```
 
 ## License
