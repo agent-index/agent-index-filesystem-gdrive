@@ -41373,7 +41373,7 @@ var AccessDeniedError = class extends AifsError {
 };
 var NotAuthenticatedError = class extends AifsError {
   constructor(reason = "no_credential") {
-    super("NOT_AUTHENTICATED", `Not authenticated: ${reason}`, { reason });
+    super("NOT_AUTHENTICATED", `Not authenticated: ${reason}`, { reason, needs_auth: true });
   }
 };
 var WriteConflictError = class extends AifsError {
@@ -41403,7 +41403,12 @@ var BackendError = class extends AifsError {
 var import_google_auth_library = __toESM(require_src6(), 1);
 var import_drive = __toESM(require_build(), 1);
 var import_oauth2 = __toESM(require_build2(), 1);
-import { readFile as readFile2, writeFile, mkdir, open, unlink } from "node:fs/promises";
+import { readFile as readFile2, writeFile, mkdir, open, unlink, readdir } from "node:fs/promises";
+import {
+  unlinkSync as fsUnlinkSync,
+  readFileSync as fsReadFileSync,
+  readdirSync as fsReaddirSync
+} from "node:fs";
 import { createHash } from "node:crypto";
 import { createServer as createServer2 } from "node:http";
 import { dirname as dirname2, join } from "node:path";
@@ -41411,6 +41416,108 @@ import { URL as URL3 } from "node:url";
 var LOCK_STALE_MS = 3e4;
 var LOCK_POLL_MS = 100;
 var LOCK_TIMEOUT_MS = 6e4;
+var _heldLockFiles = /* @__PURE__ */ new Set();
+var _exitHandlersInstalled = false;
+function _releaseAllHeldLocksSync() {
+  for (const lockFile of _heldLockFiles) {
+    try {
+      fsUnlinkSync(lockFile);
+    } catch {
+    }
+  }
+  _heldLockFiles.clear();
+}
+function _installExitHandlers() {
+  if (_exitHandlersInstalled)
+    return;
+  _exitHandlersInstalled = true;
+  const cleanup = () => _releaseAllHeldLocksSync();
+  process.on("exit", cleanup);
+  process.on("beforeExit", cleanup);
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"]) {
+    process.on(sig, () => {
+      cleanup();
+      process.removeAllListeners(sig);
+      try {
+        process.kill(process.pid, sig);
+      } catch {
+        process.exit(1);
+      }
+    });
+  }
+  process.on("uncaughtException", (err) => {
+    cleanup();
+    console.error(err && err.stack ? err.stack : err);
+    process.exit(1);
+  });
+}
+function _isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0)
+    return false;
+  if (pid === process.pid)
+    return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if (err && err.code === "EPERM")
+      return true;
+    return false;
+  }
+}
+function _isSandboxedEnv() {
+  const explicit = process.env.AIFS_SANDBOXED;
+  if (explicit === "1" || /^true$/i.test(explicit || ""))
+    return true;
+  if (explicit === "0" || /^false$/i.test(explicit || ""))
+    return false;
+  if (process.env.COWORK === "1" || process.env.COWORK_SESSION)
+    return true;
+  if (process.env.CI === "true" || process.env.CI === "1")
+    return true;
+  if (process.cwd().startsWith("/sessions/"))
+    return true;
+  return false;
+}
+function _extractAuthCode(input) {
+  if (input == null)
+    return void 0;
+  if (typeof input !== "string")
+    return input;
+  const trimmed = input.trim();
+  if (!trimmed)
+    return void 0;
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("/callback")) {
+    try {
+      const u = new URL3(trimmed, "http://localhost");
+      const code = u.searchParams.get("code");
+      if (code)
+        return code;
+    } catch {
+    }
+  }
+  if (trimmed.includes("code=") && !trimmed.includes(" ")) {
+    const match = trimmed.match(/[?&]?code=([^&\s]+)/);
+    if (match)
+      return decodeURIComponent(match[1]);
+  }
+  return trimmed;
+}
+function _authHtml(title, body) {
+  return `<!doctype html><html><body style="font-family: system-ui; max-width: 500px; margin: 80px auto; text-align: center;">
+<h2>${_escape(title)}</h2>
+<p>${body}</p>
+</body></html>`;
+}
+function _escape(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  })[c]);
+}
 var GoogleDriveAdapter = class {
   constructor() {
     this.connection = null;
@@ -41443,6 +41550,8 @@ var GoogleDriveAdapter = class {
     this.credentialPath = join(credentialStore, "gdrive.json");
     this._lockDir = join(credentialStore, "locks");
     await mkdir(this._lockDir, { recursive: true });
+    _installExitHandlers();
+    await this._sweepDeadLocks();
     try {
       this.tokens = JSON.parse(await readFile2(this.credentialPath, "utf-8"));
       this.oauth2Client.setCredentials(this.tokens);
@@ -41505,6 +41614,13 @@ var GoogleDriveAdapter = class {
       prompt: "consent"
     });
     this._capturedAuthCode = null;
+    if (_isSandboxedEnv()) {
+      return {
+        status: "awaiting_code",
+        auth_url: authUrl,
+        message: `Open this URL in your browser and sign in with your Google account. After granting access, the page will try to redirect to localhost \u2014 that redirect will fail, which is expected. Copy the full URL from your browser's address bar (it starts with "http://localhost:3939/callback?code=...") and paste it back here.`
+      };
+    }
     let callbackServerRunning = false;
     try {
       await this._startCallbackServer();
@@ -41516,16 +41632,17 @@ var GoogleDriveAdapter = class {
       return {
         status: "awaiting_callback",
         auth_url: authUrl,
-        message: `Open this URL in your browser and sign in with your Google account. After granting access, you'll see a success page and can return here. If the redirect page fails to load, copy the "code" parameter from the URL bar and paste it here.`
+        message: "Open this URL in your browser and sign in with your Google account. After granting access, the browser will complete the handshake automatically. If the redirect fails, paste the full URL from your browser's address bar back here."
       };
     }
     return {
       status: "awaiting_code",
       auth_url: authUrl,
-      message: `Open this URL in your browser, sign in with your Google account, and grant access to Google Drive. After granting access, you'll be redirected to a page that may fail to load \u2014 this is expected. Copy everything after "code=" in the URL bar (up to the "&" if there is one) and paste it here.`
+      message: `Open this URL in your browser and sign in with your Google account. After granting access, copy the full URL from your browser's address bar (it starts with "http://localhost:3939/callback?code=...") and paste it back here.`
     };
   }
   async completeAuth(authCode) {
+    authCode = _extractAuthCode(authCode);
     if (!authCode && this._capturedAuthCode) {
       authCode = this._capturedAuthCode;
       this._capturedAuthCode = null;
@@ -41568,48 +41685,59 @@ var GoogleDriveAdapter = class {
   // ─── OAuth Callback Server ──────────────────────────────────────────
   /**
    * Start a temporary HTTP server on port 3939 to capture the OAuth
-   * callback. The server auto-shuts down after capturing a code or
-   * after 5 minutes (whichever comes first).
+   * callback AND exchange the code for tokens in-line. Only used on the
+   * developer-laptop path; sandboxed environments use paste-the-URL instead.
+   * The server auto-shuts down after a successful exchange or after 5
+   * minutes, whichever comes first.
    */
   _startCallbackServer() {
     return new Promise((resolve2, reject) => {
-      const server = createServer2((req, res) => {
+      const server = createServer2(async (req, res) => {
         try {
           const url2 = new URL3(req.url, "http://localhost:3939");
-          if (url2.pathname === "/callback") {
-            const code = url2.searchParams.get("code");
-            const error2 = url2.searchParams.get("error");
-            if (error2) {
-              res.writeHead(200, { "Content-Type": "text/html" });
-              res.end(`
-                <html><body style="font-family: system-ui; max-width: 500px; margin: 80px auto; text-align: center;">
-                  <h2>Authentication Failed</h2>
-                  <p>Google returned an error: <strong>${error2}</strong></p>
-                  <p>Please go back to Cowork and try again.</p>
-                </body></html>
-              `);
-            } else if (code) {
-              this._capturedAuthCode = code;
-              res.writeHead(200, { "Content-Type": "text/html" });
-              res.end(`
-                <html><body style="font-family: system-ui; max-width: 500px; margin: 80px auto; text-align: center;">
-                  <h2>Authentication Successful</h2>
-                  <p>You can close this tab and return to Cowork.</p>
-                  <p style="color: #666; font-size: 0.9em;">The authorization code has been captured automatically.</p>
-                </body></html>
-              `);
-              setTimeout(() => this._stopCallbackServer(), 500);
-            } else {
-              res.writeHead(400, { "Content-Type": "text/plain" });
-              res.end("Missing authorization code in callback.");
-            }
-          } else {
+          if (url2.pathname !== "/callback") {
             res.writeHead(404, { "Content-Type": "text/plain" });
             res.end("Not found");
+            return;
+          }
+          const code = url2.searchParams.get("code");
+          const error2 = url2.searchParams.get("error");
+          if (error2) {
+            res.writeHead(200, { "Content-Type": "text/html" });
+            res.end(_authHtml(
+              "Authentication Failed",
+              `Google returned an error: <strong>${_escape(error2)}</strong>. Please return to your terminal and try again.`
+            ));
+            return;
+          }
+          if (!code) {
+            res.writeHead(400, { "Content-Type": "text/plain" });
+            res.end("Missing authorization code in callback.");
+            return;
+          }
+          this._capturedAuthCode = code;
+          try {
+            await this.completeAuth(code);
+            res.writeHead(200, { "Content-Type": "text/html" });
+            res.end(_authHtml(
+              "Authentication Successful",
+              "Tokens have been saved. You can close this tab and return to your terminal."
+            ));
+          } catch (exchangeErr) {
+            res.writeHead(200, { "Content-Type": "text/html" });
+            res.end(_authHtml(
+              "Authentication Failed",
+              `Token exchange failed: <strong>${_escape(exchangeErr.message || String(exchangeErr))}</strong>. Please return to your terminal and try again.`
+            ));
+          } finally {
+            setTimeout(() => this._stopCallbackServer(), 500);
           }
         } catch (err) {
-          res.writeHead(500, { "Content-Type": "text/plain" });
-          res.end("Internal error");
+          try {
+            res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end("Internal error");
+          } catch {
+          }
         }
       });
       const timeout = setTimeout(() => {
@@ -41771,15 +41899,41 @@ var GoogleDriveAdapter = class {
     }
   }
   async exists(path) {
+    if (typeof path !== "string" || !path) {
+      throw new AifsError("INVALID_ARGS", 'exists: "path" must be a non-empty string', { path });
+    }
     this._ensureAuth();
     try {
       const fileId = await this._resolvePathToId(path);
       if (!fileId) {
         return { exists: false };
       }
-      const cached2 = this.pathCache.get(this._normalizePath(path));
-      const isDir = cached2 && cached2.mimeType === "application/vnd.google-apps.folder";
-      return { exists: true, type: isDir ? "directory" : "file" };
+      const normalized = this._normalizePath(path);
+      const cached2 = this.pathCache.get(normalized);
+      try {
+        const params = { fileId, fields: "id, mimeType, trashed" };
+        if (this.connection.drive_id)
+          params.supportsAllDrives = true;
+        const res = await this._withAutoRefresh(() => this.drive.files.get(params));
+        if (res.data.trashed) {
+          this.pathCache.delete(normalized);
+          return { exists: false };
+        }
+        const isDir = res.data.mimeType === "application/vnd.google-apps.folder";
+        this.pathCache.set(normalized, { id: res.data.id, mimeType: res.data.mimeType });
+        return { exists: true, type: isDir ? "directory" : "file" };
+      } catch (verifyErr) {
+        const status = verifyErr.code || verifyErr.response?.status;
+        if (status === 404) {
+          this.pathCache.delete(normalized);
+          return { exists: false };
+        }
+        if (cached2) {
+          const isDir = cached2.mimeType === "application/vnd.google-apps.folder";
+          return { exists: true, type: isDir ? "directory" : "file" };
+        }
+        throw verifyErr;
+      }
     } catch (err) {
       if (err instanceof FileNotFoundError || err instanceof PathNotFoundError) {
         return { exists: false };
@@ -41814,30 +41968,67 @@ var GoogleDriveAdapter = class {
     }
   }
   async delete(path) {
+    if (typeof path !== "string" || !path) {
+      throw new AifsError("INVALID_ARGS", 'delete: "path" must be a non-empty string', { path });
+    }
     this._ensureAuth();
+    const normalized = this._normalizePath(path);
     const fileId = await this._resolvePathToId(path);
     if (!fileId) {
       throw new FileNotFoundError(path);
     }
-    const cached2 = this.pathCache.get(this._normalizePath(path));
+    const cached2 = this.pathCache.get(normalized);
     if (cached2 && cached2.mimeType === "application/vnd.google-apps.folder") {
       const children = await this.list(path, false);
       if (children.length > 0) {
         throw new NotEmptyError(path);
       }
     }
-    try {
-      const params = { fileId };
+    const driveDelete = async (id) => {
+      const params = { fileId: id };
       if (this.connection.drive_id) {
         params.supportsAllDrives = true;
       }
       await this._withAutoRefresh(() => this.drive.files.delete(params));
-      this.pathCache.delete(this._normalizePath(path));
+    };
+    try {
+      await driveDelete(fileId);
+      this.pathCache.delete(normalized);
+      return;
     } catch (err) {
-      this._handleDriveError(err, path);
+      const status = err.code || err.response?.status;
+      if (status !== 404) {
+        this._handleDriveError(err, path);
+        return;
+      }
+      if (cached2) {
+        this.pathCache.delete(normalized);
+        const freshId = await this._resolvePathToId(path);
+        if (!freshId) {
+          throw new FileNotFoundError(path);
+        }
+        if (freshId === fileId) {
+          throw new FileNotFoundError(path);
+        }
+        try {
+          await driveDelete(freshId);
+          this.pathCache.delete(normalized);
+          return;
+        } catch (retryErr) {
+          this._handleDriveError(retryErr, path);
+          return;
+        }
+      }
+      throw new FileNotFoundError(path);
     }
   }
   async copy(source, destination) {
+    if (typeof source !== "string" || !source) {
+      throw new AifsError("INVALID_ARGS", 'copy: "source" must be a non-empty string', { source });
+    }
+    if (typeof destination !== "string" || !destination) {
+      throw new AifsError("INVALID_ARGS", 'copy: "destination" must be a non-empty string', { destination });
+    }
     this._ensureAuth();
     const sourceId = await this._resolvePathToId(source);
     if (!sourceId) {
@@ -42154,42 +42345,98 @@ var GoogleDriveAdapter = class {
     const lockFile = this._lockFilePath(normalizedPath);
     const lockContent = JSON.stringify({ pid: process.pid, ts: Date.now() });
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    let lastBreakError = null;
     while (Date.now() < deadline) {
       try {
         const fh = await open(lockFile, "wx");
         await fh.writeFile(lockContent);
         await fh.close();
+        _heldLockFiles.add(lockFile);
         return lockFile;
       } catch (err) {
         if (err.code !== "EEXIST")
           throw err;
+        let breakable = false;
         try {
           const content = await readFile2(lockFile, "utf-8");
           const info = JSON.parse(content);
-          if (Date.now() - info.ts > LOCK_STALE_MS) {
-            try {
-              await unlink(lockFile);
-            } catch {
-            }
-            continue;
+          if (typeof info.pid === "number" && !_isPidAlive(info.pid)) {
+            breakable = true;
+          } else if (Date.now() - info.ts > LOCK_STALE_MS) {
+            breakable = true;
           }
         } catch {
+          continue;
+        }
+        if (breakable) {
+          try {
+            await unlink(lockFile);
+            lastBreakError = null;
+          } catch (unlinkErr) {
+            if (unlinkErr && unlinkErr.code !== "ENOENT") {
+              lastBreakError = unlinkErr;
+            }
+          }
           continue;
         }
         await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
       }
     }
+    const detail = lastBreakError ? ` (could not break stale lock: ${lastBreakError.code || "unknown"} \u2014 ${lastBreakError.message}; lockFile=${lockFile})` : ` (lockFile=${lockFile})`;
     throw new BackendError(
-      `Timed out waiting for folder lock on path: ${normalizedPath}`
+      `Timed out waiting for folder lock on path: ${normalizedPath}${detail}`
     );
   }
   /**
    * Release a previously acquired lock.
    */
   async _releasePathLock(lockFilePath) {
+    _heldLockFiles.delete(lockFilePath);
     try {
       await unlink(lockFilePath);
     } catch {
+    }
+  }
+  /**
+   * Best-effort startup sweep: walks _lockDir and removes any lock
+   * file whose holder PID is no longer alive. This catches the case
+   * where a previous invocation was killed (SIGTERM from a Bash
+   * timeout, OOM, etc.) before the exit handlers could run, leaving
+   * stale locks that would otherwise block writes for 30s each.
+   *
+   * Errors are swallowed — a failed sweep just means the per-call
+   * staleness check has to do the work instead.
+   */
+  async _sweepDeadLocks() {
+    if (!this._lockDir)
+      return;
+    let entries;
+    try {
+      entries = await readdir(this._lockDir);
+    } catch {
+      return;
+    }
+    for (const name of entries) {
+      if (!name.endsWith(".lock"))
+        continue;
+      const lockFile = join(this._lockDir, name);
+      try {
+        const content = await readFile2(lockFile, "utf-8");
+        const info = JSON.parse(content);
+        const pidDead = typeof info.pid !== "number" || !_isPidAlive(info.pid);
+        const tsStale = typeof info.ts !== "number" || Date.now() - info.ts > LOCK_STALE_MS;
+        if (pidDead || tsStale) {
+          try {
+            await unlink(lockFile);
+          } catch {
+          }
+        }
+      } catch {
+        try {
+          await unlink(lockFile);
+        } catch {
+        }
+      }
     }
   }
   // ─── Helpers ──────────────────────────────────────────────────────────
@@ -42252,6 +42499,32 @@ var GoogleDriveAdapter = class {
 // src/exec.mjs
 import { readFile as readFile3, writeFile as writeFile2, mkdir as mkdir2 } from "node:fs/promises";
 import { join as join2, dirname as dirname3 } from "node:path";
+var VERBOSE = process.env.AIFS_VERBOSE === "1" || process.argv.includes("--verbose");
+var DEBUG_FIELDS = /* @__PURE__ */ new Set(["debug", "raw_response", "_trace", "_timing"]);
+function stripDebugFields(value) {
+  if (VERBOSE || value === null || typeof value !== "object")
+    return value;
+  if (Array.isArray(value))
+    return value.map(stripDebugFields);
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (DEBUG_FIELDS.has(k))
+      continue;
+    out[k] = stripDebugFields(v);
+  }
+  return out;
+}
+function normalizePathArgs(args) {
+  if (!args || typeof args !== "object")
+    return args;
+  const out = { ...args };
+  for (const key of ["path", "source", "destination"]) {
+    if (typeof out[key] === "string") {
+      out[key] = out[key].replace(/\\/g, "/");
+    }
+  }
+  return out;
+}
 var PATH_CACHE_FILENAME = "path-cache.json";
 var PATH_CACHE_MAX_AGE_MS = 30 * 60 * 1e3;
 var PATH_CACHE_MAX_ENTRIES = 2e3;
@@ -42288,27 +42561,55 @@ async function savePathCache(credentialStore, pathCache) {
   } catch {
   }
 }
+function requireArgs(toolName, args, required2) {
+  const missing = [];
+  for (const entry of required2) {
+    const [key, kind] = Array.isArray(entry) ? entry : [entry, null];
+    const v = args[key];
+    if (v === void 0 || v === null) {
+      missing.push(key);
+      continue;
+    }
+    if (kind === "path" && (typeof v !== "string" || v === "")) {
+      missing.push(key);
+    }
+  }
+  if (missing.length > 0) {
+    throw new AifsError(
+      "INVALID_ARGS",
+      `${toolName}: missing or empty required argument(s): ${missing.join(", ")}`,
+      { tool: toolName, missing }
+    );
+  }
+}
 async function routeToolCall(adapter, toolName, args) {
   switch (toolName) {
     case "aifs_read":
+      requireArgs(toolName, args, [["path", "path"]]);
       return adapter.read(args.path);
     case "aifs_write": {
+      requireArgs(toolName, args, [["path", "path"], "content"]);
       await adapter.write(args.path, args.content);
       return { success: true, path: args.path };
     }
     case "aifs_list": {
+      requireArgs(toolName, args, [["path", "path"]]);
       const entries = await adapter.list(args.path, args.recursive ?? false);
       return { entries };
     }
     case "aifs_exists":
+      requireArgs(toolName, args, [["path", "path"]]);
       return adapter.exists(args.path);
     case "aifs_stat":
+      requireArgs(toolName, args, [["path", "path"]]);
       return adapter.stat(args.path);
     case "aifs_delete": {
+      requireArgs(toolName, args, [["path", "path"]]);
       await adapter.delete(args.path);
       return { success: true };
     }
     case "aifs_copy": {
+      requireArgs(toolName, args, [["source", "path"], ["destination", "path"]]);
       await adapter.copy(args.source, args.destination);
       return { success: true };
     }
@@ -42321,10 +42622,13 @@ async function routeToolCall(adapter, toolName, args) {
       } else if (action === "complete") {
         return adapter.completeAuth(args.auth_code);
       }
-      throw new AifsError("BACKEND_ERROR", `Unknown auth action: ${action}`);
+      throw new AifsError("INVALID_ARGS", `Unknown auth action: ${action}`, {
+        tool: toolName,
+        valid_actions: ["start", "complete"]
+      });
     }
     default:
-      throw new AifsError("BACKEND_ERROR", `Unknown tool: ${toolName}`);
+      throw new AifsError("UNKNOWN_TOOL", `Unknown tool: ${toolName}`, { tool: toolName });
   }
 }
 async function main() {
@@ -42353,17 +42657,19 @@ async function main() {
   }
   const toolName = args[0];
   let toolArgs = {};
-  if (args[1]) {
+  if (args[1] && !args[1].startsWith("--")) {
     try {
       toolArgs = JSON.parse(args[1]);
     } catch (err) {
       console.log(JSON.stringify({
         error: "INVALID_ARGS",
-        message: `Failed to parse JSON arguments: ${err.message}`
+        message: `Failed to parse JSON arguments: ${err.message}`,
+        input_preview: args[1].slice(0, 120)
       }));
       process.exit(1);
     }
   }
+  toolArgs = normalizePathArgs(toolArgs);
   initEnvironment();
   let config2;
   try {
@@ -42400,16 +42706,19 @@ async function main() {
   }
   try {
     const result = await routeToolCall(adapter, toolName, toolArgs);
-    const output = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+    const stripped = typeof result === "string" ? result : stripDebugFields(result);
+    const output = typeof stripped === "string" ? stripped : JSON.stringify(stripped, null, 2);
     console.log(output);
   } catch (err) {
     if (err instanceof AifsError) {
-      console.log(JSON.stringify(err.toResponse(), null, 2));
+      console.log(JSON.stringify(stripDebugFields(err.toResponse()), null, 2));
       process.exit(1);
     }
+    const attemptedPath = toolArgs?.path || toolArgs?.source || toolArgs?.destination;
     console.log(JSON.stringify({
       error: "BACKEND_ERROR",
-      message: err.message
+      message: err.message,
+      ...attemptedPath ? { path: attemptedPath } : {}
     }, null, 2));
     process.exit(1);
   } finally {
