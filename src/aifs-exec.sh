@@ -114,4 +114,10 @@ if [ -z "$EXEC_PATH" ]; then
 fi
 
 # Execute
-exec node "$EXEC_PATH" "$@"
+#
+# --no-deprecation / --no-warnings suppress Node-level deprecation and
+# experimental-feature warnings from our transitive deps (punycode, etc.).
+# These are purely noise in a CLI wrapper and they leak into stderr where
+# callers have to decide whether they're meaningful. If a real error occurs
+# it still surfaces through the process exit code and JSON error output.
+exec node --no-deprecation --no-warnings "$EXEC_PATH" "$@"
