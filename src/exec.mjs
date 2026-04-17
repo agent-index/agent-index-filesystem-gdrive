@@ -169,7 +169,18 @@ async function routeToolCall(adapter, toolName, args) {
       // content may legally be the empty string (truncate-to-zero write),
       // so it's required-defined but allowed-empty. path must be a real path.
       requireArgs(toolName, args, [['path', 'path'], 'content']);
-      await adapter.write(args.path, args.content);
+
+      // Honour the optional `encoding` field. When encoding is "base64",
+      // prepend the "base64:" sentinel that the adapter's write() method
+      // looks for so the payload is decoded to binary bytes before upload.
+      // Without this, base64 text gets stored as-is and the resulting
+      // Drive file is an ASCII blob instead of the intended binary.
+      let content = args.content;
+      if (args.encoding === 'base64' && !content.startsWith('base64:')) {
+        content = 'base64:' + content;
+      }
+
+      await adapter.write(args.path, content);
       return { success: true, path: args.path };
     }
 

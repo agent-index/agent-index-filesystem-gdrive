@@ -41403,9 +41403,9 @@ var BackendError = class extends AifsError {
 var import_google_auth_library = __toESM(require_src6(), 1);
 var import_drive = __toESM(require_build(), 1);
 var import_oauth2 = __toESM(require_build2(), 1);
-import { readFile as readFile2, writeFile, mkdir, open, unlink, readdir } from "node:fs/promises";
+import { readFile as readFile2, writeFile, mkdir, open, readdir } from "node:fs/promises";
 import {
-  unlinkSync as fsUnlinkSync,
+  writeFileSync as fsWriteFileSync,
   readFileSync as fsReadFileSync,
   readdirSync as fsReaddirSync
 } from "node:fs";
@@ -41419,9 +41419,10 @@ var LOCK_TIMEOUT_MS = 6e4;
 var _heldLockFiles = /* @__PURE__ */ new Set();
 var _exitHandlersInstalled = false;
 function _releaseAllHeldLocksSync() {
+  const marker = JSON.stringify({ pid: process.pid, ts: Date.now(), released: true });
   for (const lockFile of _heldLockFiles) {
     try {
-      fsUnlinkSync(lockFile);
+      fsWriteFileSync(lockFile, marker);
     } catch {
     }
   }
@@ -41984,15 +41985,31 @@ var GoogleDriveAdapter = class {
         throw new NotEmptyError(path);
       }
     }
-    const driveDelete = async (id) => {
+    const isSharedDrive = !!this.connection.drive_id;
+    const driveRemove = async (id) => {
       const params = { fileId: id };
-      if (this.connection.drive_id) {
+      if (isSharedDrive)
         params.supportsAllDrives = true;
+      try {
+        await this._withAutoRefresh(() => this.drive.files.delete(params));
+        return;
+      } catch (delErr) {
+        const status = delErr.code || delErr.response?.status;
+        if (isSharedDrive && status === 404) {
+          await this._withAutoRefresh(
+            () => this.drive.files.update({
+              fileId: id,
+              requestBody: { trashed: true },
+              supportsAllDrives: true
+            })
+          );
+          return;
+        }
+        throw delErr;
       }
-      await this._withAutoRefresh(() => this.drive.files.delete(params));
     };
     try {
-      await driveDelete(fileId);
+      await driveRemove(fileId);
       this.pathCache.delete(normalized);
       return;
     } catch (err) {
@@ -42011,7 +42028,7 @@ var GoogleDriveAdapter = class {
           throw new FileNotFoundError(path);
         }
         try {
-          await driveDelete(freshId);
+          await driveRemove(freshId);
           this.pathCache.delete(normalized);
           return;
         } catch (retryErr) {
@@ -42318,12 +42335,16 @@ var GoogleDriveAdapter = class {
   // ─── Cross-process path locking ────────────────────────────────────────
   //
   // Uses the local filesystem as a shared mutex. Lock files are created
-  // atomically with O_CREAT | O_EXCL so only one process succeeds. Others
-  // poll until the lock is released (file deleted) or stale (older than
-  // LOCK_STALE_MS, indicating a crashed holder).
+  // atomically with O_CREAT | O_EXCL on first acquisition. Release is
+  // done by *overwriting* the file with a `{ released: true }` marker
+  // instead of deleting it — this avoids EPERM failures in sandboxed
+  // environments (Cowork containers) where unlink is blocked.
   //
-  // Lock files contain the PID and timestamp of the holder for stale
-  // detection. They live in _lockDir (e.g. .agent-index/credentials/locks/).
+  // Acquisition checks: if the lock file exists and is released, stale,
+  // or held by a dead PID, we overwrite it with our own claim.
+  //
+  // Lock files contain PID, timestamp, and release status. They live
+  // in _lockDir (e.g. .agent-index/credentials/locks/).
   /**
    * Convert a normalized AIFS path to a lock file path.
    * Uses a hash to avoid filesystem issues with long/nested paths.
@@ -42337,16 +42358,22 @@ var GoogleDriveAdapter = class {
    * Acquire a cross-process lock for the given AIFS path.
    * Returns the lock file path (needed for release).
    *
-   * - Attempts atomic file creation (O_CREAT | O_EXCL).
-   * - If the file already exists, checks for staleness, then polls.
-   * - Throws if the lock cannot be acquired within LOCK_TIMEOUT_MS.
+   * Strategy:
+   *   1. Try atomic O_CREAT|O_EXCL — wins if no lock file exists.
+   *   2. If lock file exists, read it. If it's released, stale, or
+   *      held by a dead PID, overwrite it with our own lock claim.
+   *   3. Otherwise poll until it's released or we time out.
+   *
+   * In sandboxed environments (Cowork), unlink() fails with EPERM, so
+   * the entire lock lifecycle uses overwrite-to-release instead of
+   * delete-to-release. A lock file with `released: true` is treated
+   * the same as no lock file.
    */
   async _acquirePathLock(normalizedPath) {
     const lockFile = this._lockFilePath(normalizedPath);
-    const lockContent = JSON.stringify({ pid: process.pid, ts: Date.now() });
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
-    let lastBreakError = null;
     while (Date.now() < deadline) {
+      const lockContent = JSON.stringify({ pid: process.pid, ts: Date.now() });
       try {
         const fh = await open(lockFile, "wx");
         await fh.writeFile(lockContent);
@@ -42356,53 +42383,58 @@ var GoogleDriveAdapter = class {
       } catch (err) {
         if (err.code !== "EEXIST")
           throw err;
-        let breakable = false;
+      }
+      let breakable = false;
+      try {
+        const content = await readFile2(lockFile, "utf-8");
+        const info = JSON.parse(content);
+        if (info.released === true) {
+          breakable = true;
+        } else if (typeof info.pid === "number" && !_isPidAlive(info.pid)) {
+          breakable = true;
+        } else if (Date.now() - info.ts > LOCK_STALE_MS) {
+          breakable = true;
+        }
+      } catch {
+        breakable = true;
+      }
+      if (breakable) {
         try {
-          const content = await readFile2(lockFile, "utf-8");
-          const info = JSON.parse(content);
-          if (typeof info.pid === "number" && !_isPidAlive(info.pid)) {
-            breakable = true;
-          } else if (Date.now() - info.ts > LOCK_STALE_MS) {
-            breakable = true;
-          }
+          await writeFile(lockFile, lockContent);
+          _heldLockFiles.add(lockFile);
+          return lockFile;
         } catch {
           continue;
         }
-        if (breakable) {
-          try {
-            await unlink(lockFile);
-            lastBreakError = null;
-          } catch (unlinkErr) {
-            if (unlinkErr && unlinkErr.code !== "ENOENT") {
-              lastBreakError = unlinkErr;
-            }
-          }
-          continue;
-        }
-        await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
       }
+      await new Promise((r) => setTimeout(r, LOCK_POLL_MS));
     }
-    const detail = lastBreakError ? ` (could not break stale lock: ${lastBreakError.code || "unknown"} \u2014 ${lastBreakError.message}; lockFile=${lockFile})` : ` (lockFile=${lockFile})`;
     throw new BackendError(
-      `Timed out waiting for folder lock on path: ${normalizedPath}${detail}`
+      `Timed out waiting for folder lock on path: ${normalizedPath} (lockFile=${lockFile})`
     );
   }
   /**
-   * Release a previously acquired lock.
+   * Release a previously acquired lock by overwriting with a released
+   * marker. We overwrite instead of unlinking because sandbox
+   * environments (Cowork) block unlink with EPERM.
    */
   async _releasePathLock(lockFilePath) {
     _heldLockFiles.delete(lockFilePath);
+    const marker = JSON.stringify({ pid: process.pid, ts: Date.now(), released: true });
     try {
-      await unlink(lockFilePath);
+      await writeFile(lockFilePath, marker);
     } catch {
     }
   }
   /**
-   * Best-effort startup sweep: walks _lockDir and removes any lock
-   * file whose holder PID is no longer alive. This catches the case
-   * where a previous invocation was killed (SIGTERM from a Bash
-   * timeout, OOM, etc.) before the exit handlers could run, leaving
-   * stale locks that would otherwise block writes for 30s each.
+   * Best-effort startup sweep: walks _lockDir and marks any stale or
+   * dead-PID lock file as released. This catches the case where a
+   * previous invocation was killed (SIGTERM from a Bash timeout, OOM,
+   * etc.) before the exit handlers could run, leaving stale locks that
+   * would otherwise block writes for 30s each.
+   *
+   * Uses overwrite (not unlink) so it works in sandbox environments
+   * where unlink returns EPERM.
    *
    * Errors are swallowed — a failed sweep just means the per-call
    * staleness check has to do the work instead.
@@ -42416,6 +42448,7 @@ var GoogleDriveAdapter = class {
     } catch {
       return;
     }
+    const releasedMarker = JSON.stringify({ pid: process.pid, ts: Date.now(), released: true });
     for (const name of entries) {
       if (!name.endsWith(".lock"))
         continue;
@@ -42423,17 +42456,19 @@ var GoogleDriveAdapter = class {
       try {
         const content = await readFile2(lockFile, "utf-8");
         const info = JSON.parse(content);
+        if (info.released === true)
+          continue;
         const pidDead = typeof info.pid !== "number" || !_isPidAlive(info.pid);
         const tsStale = typeof info.ts !== "number" || Date.now() - info.ts > LOCK_STALE_MS;
         if (pidDead || tsStale) {
           try {
-            await unlink(lockFile);
+            await writeFile(lockFile, releasedMarker);
           } catch {
           }
         }
       } catch {
         try {
-          await unlink(lockFile);
+          await writeFile(lockFile, releasedMarker);
         } catch {
         }
       }
@@ -42589,7 +42624,11 @@ async function routeToolCall(adapter, toolName, args) {
       return adapter.read(args.path);
     case "aifs_write": {
       requireArgs(toolName, args, [["path", "path"], "content"]);
-      await adapter.write(args.path, args.content);
+      let content = args.content;
+      if (args.encoding === "base64" && !content.startsWith("base64:")) {
+        content = "base64:" + content;
+      }
+      await adapter.write(args.path, content);
       return { success: true, path: args.path };
     }
     case "aifs_list": {
