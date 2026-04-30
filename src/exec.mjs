@@ -180,8 +180,17 @@ async function routeToolCall(adapter, toolName, args) {
         content = 'base64:' + content;
       }
 
-      await adapter.write(args.path, content);
-      return { success: true, path: args.path };
+      // v2.0: pass through if_revision for safe concurrent edits to
+      // shared state files. When supplied, the adapter rejects the
+      // write with REVISION_CONFLICT if the file's current revision
+      // differs — caller re-reads, re-applies, and retries.
+      const writeOptions = {};
+      if (typeof args.if_revision === 'string' && args.if_revision.length > 0) {
+        writeOptions.ifRevision = args.if_revision;
+      }
+
+      const res = await adapter.write(args.path, content, writeOptions);
+      return { success: true, path: args.path, revision: res?.revision ?? null };
     }
 
     case 'aifs_list': {
@@ -226,6 +235,47 @@ async function routeToolCall(adapter, toolName, args) {
       });
     }
 
+
+    // ─── v2.0 access-control ops (incremental rollout) ──────────────
+
+    case 'aifs_share': {
+      requireArgs(toolName, args, [['path', 'path'], 'subject', 'role']);
+      const options = {};
+      if (Object.prototype.hasOwnProperty.call(args, 'inherit')) {
+        options.inherit = args.inherit;
+      }
+      return adapter.share(args.path, args.subject, args.role, options);
+    }
+
+    case 'aifs_unshare': {
+      requireArgs(toolName, args, [['path', 'path'], 'subject']);
+      return adapter.unshare(args.path, args.subject);
+    }
+
+    case 'aifs_get_permissions': {
+      requireArgs(toolName, args, [['path', 'path']]);
+      const options = {};
+      if (Object.prototype.hasOwnProperty.call(args, 'include_inherited')) {
+        options.includeInherited = args.include_inherited;
+      }
+      return adapter.getPermissions(args.path, options);
+    }
+
+    case 'aifs_search': {
+      requireArgs(toolName, args, ['scope']);
+      return adapter.search({
+        scope: args.scope,
+        type: args.type,
+        nameContains: args.name_contains,
+        maxResults: args.max_results,
+      });
+    }
+
+    case 'aifs_transfer_ownership': {
+      requireArgs(toolName, args, [['path', 'path'], 'new_owner']);
+      return adapter.transferOwnership(args.path, args.new_owner);
+    }
+
     default:
       throw new AifsError('UNKNOWN_TOOL', `Unknown tool: ${toolName}`, { tool: toolName });
   }
@@ -244,6 +294,12 @@ async function main() {
         'aifs_read', 'aifs_write', 'aifs_list', 'aifs_exists',
         'aifs_stat', 'aifs_delete', 'aifs_copy',
         'aifs_auth_status', 'aifs_authenticate',
+        // v2.0 ops (incremental rollout)
+        'aifs_share',
+        'aifs_unshare',
+        'aifs_get_permissions',
+        'aifs_search',
+        'aifs_transfer_ownership',
       ],
       examples: [
         'aifs-exec aifs_read \'{"path":"/projects/foo/project.md"}\'',
