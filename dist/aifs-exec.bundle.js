@@ -41398,6 +41398,60 @@ var BackendError = class extends AifsError {
     });
   }
 };
+var RevisionConflictError = class extends AifsError {
+  constructor(path, expectedRevision, actualRevision) {
+    super(
+      "REVISION_CONFLICT",
+      `Revision mismatch at path: ${path}. Re-read, re-apply changes, and retry.`,
+      { path, expected_revision: expectedRevision, actual_revision: actualRevision }
+    );
+  }
+};
+var InvalidSubjectError = class extends AifsError {
+  constructor(subject, reason = "unknown") {
+    super(
+      "INVALID_SUBJECT",
+      `Subject is not a valid identity: ${subject} (${reason})`,
+      { subject, reason }
+    );
+  }
+};
+var InvalidRoleError = class extends AifsError {
+  constructor(role, validRoles = ["reader", "commenter", "writer"]) {
+    super(
+      "INVALID_ROLE",
+      `Role "${role}" is not accepted. Valid roles: ${validRoles.join(", ")}`,
+      { role, valid_roles: validRoles }
+    );
+  }
+};
+var InvalidRecipientError = class extends AifsError {
+  constructor(recipient, reason = "unknown") {
+    super(
+      "INVALID_RECIPIENT",
+      `Recipient is not a valid identity for ownership transfer: ${recipient} (${reason})`,
+      { recipient, reason }
+    );
+  }
+};
+var InvalidScopeError = class extends AifsError {
+  constructor(scope, reason = "unknown") {
+    super(
+      "INVALID_SCOPE",
+      `Search scope is invalid: ${scope} (${reason})`,
+      { scope, reason }
+    );
+  }
+};
+var NotImplementedError = class extends AifsError {
+  constructor(operation, backend = "this backend") {
+    super(
+      "NOT_IMPLEMENTED",
+      `Operation "${operation}" is not implemented for ${backend}`,
+      { operation, backend }
+    );
+  }
+};
 
 // src/adapters/gdrive.js
 var import_google_auth_library = __toESM(require_src6(), 1);
@@ -41789,7 +41843,7 @@ var GoogleDriveAdapter = class {
       this._handleDriveError(err, path);
     }
   }
-  async write(path, content) {
+  async write(path, content, options = {}) {
     this._ensureAuth();
     const normalized = this._normalizePath(path);
     const parentPath = this._parentPath(normalized);
@@ -41804,17 +41858,36 @@ var GoogleDriveAdapter = class {
       body = content;
     }
     const existingId = await this._resolvePathToId(path);
+    if (options.ifRevision && existingId) {
+      const params = { fileId: existingId, fields: "headRevisionId" };
+      if (this.connection.drive_id)
+        params.supportsAllDrives = true;
+      try {
+        const res = await this._withAutoRefresh(
+          () => this.drive.files.get(params)
+        );
+        const currentRevision = res?.data?.headRevisionId || null;
+        if (currentRevision !== options.ifRevision) {
+          throw new RevisionConflictError(path, options.ifRevision, currentRevision);
+        }
+      } catch (err) {
+        if (err instanceof RevisionConflictError)
+          throw err;
+        this._handleDriveError(err, path);
+      }
+    }
     try {
       const driveParams = {};
       if (this.connection.drive_id) {
         driveParams.supportsAllDrives = true;
       }
+      let res;
       if (existingId) {
-        const res = await this._withAutoRefresh(
+        res = await this._withAutoRefresh(
           () => this.drive.files.update({
             fileId: existingId,
             media: { mimeType, body },
-            fields: "id, mimeType",
+            fields: "id, mimeType, headRevisionId",
             ...driveParams
           })
         );
@@ -41827,16 +41900,17 @@ var GoogleDriveAdapter = class {
         if (this.connection.drive_id) {
           fileMetadata.driveId = this.connection.drive_id;
         }
-        const res = await this._withAutoRefresh(
+        res = await this._withAutoRefresh(
           () => this.drive.files.create({
             requestBody: fileMetadata,
             media: { mimeType, body },
-            fields: "id, mimeType",
+            fields: "id, mimeType, headRevisionId",
             ...driveParams
           })
         );
         this.pathCache.set(normalized, { id: res.data.id, mimeType: res.data.mimeType });
       }
+      return { revision: res?.data?.headRevisionId || null };
     } catch (err) {
       this._handleDriveError(err, path);
     }
@@ -41951,7 +42025,7 @@ var GoogleDriveAdapter = class {
     try {
       const params = {
         fileId,
-        fields: "size, modifiedTime, createdTime"
+        fields: "size, modifiedTime, createdTime, headRevisionId"
       };
       if (this.connection.drive_id) {
         params.supportsAllDrives = true;
@@ -41962,7 +42036,8 @@ var GoogleDriveAdapter = class {
       return {
         size: parseInt(res.data.size || "0", 10),
         modified: res.data.modifiedTime,
-        created: res.data.createdTime
+        created: res.data.createdTime,
+        revision: res.data.headRevisionId || null
       };
     } catch (err) {
       this._handleDriveError(err, path);
@@ -42529,6 +42604,447 @@ var GoogleDriveAdapter = class {
         );
     }
   }
+  // ─── Access control (v2.0+) ────────────────────────────────────────────
+  /**
+   * Map an AIFS role to the corresponding Drive permission role.
+   *
+   * AIFS roles: reader | commenter | writer
+   * Drive roles: reader | commenter | writer | (organizer | fileOrganizer | owner)
+   *
+   * The AIFS contract intentionally does not expose Drive-specific elevated
+   * roles like organizer; share() is for granting collaborator-level access.
+   * Ownership changes go through transferOwnership().
+   */
+  _aifsRoleToDriveRole(aifsRole) {
+    const map2 = {
+      reader: "reader",
+      commenter: "commenter",
+      writer: "writer"
+    };
+    if (!Object.prototype.hasOwnProperty.call(map2, aifsRole)) {
+      throw new InvalidRoleError(aifsRole);
+    }
+    return map2[aifsRole];
+  }
+  /**
+   * Map a subject string (email or group address) to a Drive permission type.
+   *
+   * Drive distinguishes "user" (individual email) from "group" (Google Group
+   * email). Both are addressed by the `emailAddress` field; only the `type`
+   * differs. We default to "user" — if Drive returns "User does not exist",
+   * share() retries as type="group". This mirrors Drive UI's auto-detection.
+   */
+  _detectSubjectType(subject) {
+    return "user";
+  }
+  /**
+   * Grant a subject a role at a path.
+   *
+   * Drive Permissions API: permissions.create with {emailAddress, role, type}.
+   * Eventual consistency: Drive's permissions API can take seconds to fully
+   * propagate. Callers that immediately try to act on a freshly-shared
+   * resource should be prepared for transient ACCESS_DENIED on follow-up
+   * reads — rerun with a small backoff.
+   */
+  async share(path, subject, role, options = {}) {
+    this._ensureAuth();
+    const driveRole = this._aifsRoleToDriveRole(role);
+    let subjectType = this._detectSubjectType(subject);
+    if (!subject || typeof subject !== "string" || !subject.includes("@")) {
+      throw new InvalidSubjectError(subject, "must be an email or group address");
+    }
+    const fileId = await this._resolvePathToId(path);
+    if (!fileId) {
+      throw new PathNotFoundError(path);
+    }
+    const params = {
+      fileId,
+      requestBody: {
+        type: subjectType,
+        role: driveRole,
+        emailAddress: subject
+      },
+      // Don't send notification emails — agent-index sends its own
+      // welcome/onboarding emails via invite-member; Drive's generic
+      // "X shared a folder with you" mail would just add noise.
+      sendNotificationEmail: false
+    };
+    if (this.connection.drive_id) {
+      params.supportsAllDrives = true;
+    }
+    void options.inherit;
+    let res;
+    try {
+      res = await this._withAutoRefresh(
+        () => this.drive.permissions.create(params)
+      );
+    } catch (err) {
+      const message = err?.errors?.[0]?.message || err?.message || "";
+      if (subjectType === "user" && /user does not exist|invalid argument/i.test(message)) {
+        params.requestBody.type = "group";
+        try {
+          res = await this._withAutoRefresh(
+            () => this.drive.permissions.create(params)
+          );
+        } catch (groupErr) {
+          this._handlePermissionError(groupErr, path, subject, role);
+        }
+      } else {
+        this._handlePermissionError(err, path, subject, role);
+      }
+    }
+    return {
+      shared: true,
+      permission_id: res?.data?.id ?? null,
+      path
+    };
+  }
+  /**
+   * Revoke a subject's access at a path.
+   *
+   * Drive's permissions.delete requires a permission_id, not an email.
+   * So the flow is: list permissions on the file, find the one matching
+   * the subject email, then delete by ID.
+   *
+   * Returns {unshared: true} if an explicit permission was removed, or
+   * {unshared: false} if the subject had no explicit permission on this
+   * exact resource (e.g., they only had inherited access). The latter
+   * is not an error — per the SPEC, it's a soft outcome the caller can
+   * choose how to surface.
+   */
+  async unshare(path, subject) {
+    this._ensureAuth();
+    if (!subject || typeof subject !== "string") {
+      throw new InvalidSubjectError(subject, "must be an email or group address");
+    }
+    const fileId = await this._resolvePathToId(path);
+    if (!fileId) {
+      throw new PathNotFoundError(path);
+    }
+    const listParams = {
+      fileId,
+      fields: "permissions(id,emailAddress,type,role)",
+      pageSize: 100
+    };
+    if (this.connection.drive_id) {
+      listParams.supportsAllDrives = true;
+    }
+    let permissions;
+    try {
+      const res = await this._withAutoRefresh(
+        () => this.drive.permissions.list(listParams)
+      );
+      permissions = res?.data?.permissions || [];
+    } catch (err) {
+      this._handlePermissionError(err, path, subject, null);
+    }
+    const subjectLower = subject.toLowerCase();
+    const match = permissions.find(
+      (p) => (p.emailAddress || "").toLowerCase() === subjectLower
+    );
+    if (!match) {
+      return { unshared: false, path };
+    }
+    const deleteParams = { fileId, permissionId: match.id };
+    if (this.connection.drive_id) {
+      deleteParams.supportsAllDrives = true;
+    }
+    try {
+      await this._withAutoRefresh(
+        () => this.drive.permissions.delete(deleteParams)
+      );
+    } catch (err) {
+      this._handlePermissionError(err, path, subject, null);
+    }
+    return { unshared: true, path };
+  }
+  /**
+   * Map a Drive role back to an AIFS role.
+   *
+   * Drive can return roles beyond what AIFS exposes (organizer, fileOrganizer,
+   * owner). These are all "fully-privileged" roles with semantic differences
+   * Drive cares about; AIFS treats them all as `writer` since the consumer
+   * collections don't need finer detail. If a future use case needs the
+   * Drive-native role exposed, we can add an optional `native_role` field
+   * to the response without breaking the contract.
+   */
+  _driveRoleToAifsRole(driveRole) {
+    const map2 = {
+      owner: "writer",
+      organizer: "writer",
+      fileOrganizer: "writer",
+      writer: "writer",
+      commenter: "commenter",
+      reader: "reader"
+    };
+    return map2[driveRole] || "reader";
+  }
+  /**
+   * Reverse-lookup a Drive file ID to an AIFS path using the path cache.
+   * Returns null if the ID isn't in the cache. Caller decides how to
+   * present an unresolved inheritedFrom (we surface as `gdrive-id:<id>`
+   * so callers can still distinguish vs. a null).
+   */
+  _idToPath(fileId) {
+    if (!fileId)
+      return null;
+    for (const [path, entry] of this.pathCache) {
+      if (entry?.id === fileId)
+        return path;
+    }
+    return null;
+  }
+  /**
+   * List current permissions at a path. Returns explicit grants and,
+   * optionally, inherited grants from ancestors (Shared Drives only —
+   * personal Drive doesn't surface inherited permissions in the API).
+   */
+  async getPermissions(path, options = {}) {
+    this._ensureAuth();
+    const includeInherited = options.includeInherited !== false;
+    const fileId = await this._resolvePathToId(path);
+    if (!fileId) {
+      throw new PathNotFoundError(path);
+    }
+    const baseParams = {
+      fileId,
+      fields: "nextPageToken,permissions(id,emailAddress,type,role,permissionDetails)",
+      pageSize: 100
+    };
+    if (this.connection.drive_id) {
+      baseParams.supportsAllDrives = true;
+    }
+    const all = [];
+    let pageToken = void 0;
+    try {
+      do {
+        const params = pageToken ? { ...baseParams, pageToken } : baseParams;
+        const res = await this._withAutoRefresh(
+          () => this.drive.permissions.list(params)
+        );
+        const page = res?.data?.permissions || [];
+        all.push(...page);
+        pageToken = res?.data?.nextPageToken;
+      } while (pageToken);
+    } catch (err) {
+      this._handlePermissionError(err, path, null, null);
+    }
+    const result = [];
+    for (const p of all) {
+      const detail = p.permissionDetails && p.permissionDetails[0] || null;
+      const isInherited = detail?.inherited === true;
+      if (!includeInherited && isInherited)
+        continue;
+      let inheritedFrom = null;
+      if (isInherited && detail?.inheritedFrom) {
+        const resolved = this._idToPath(detail.inheritedFrom);
+        inheritedFrom = resolved !== null ? resolved : `gdrive-id:${detail.inheritedFrom}`;
+      }
+      result.push({
+        subject: p.emailAddress || (p.type === "anyone" ? "*" : p.type),
+        role: this._driveRoleToAifsRole(p.role),
+        permission_id: p.id || null,
+        inherited_from: inheritedFrom,
+        granted_date: null
+        // Drive Permission resource has no creationTime
+      });
+    }
+    return { permissions: result };
+  }
+  // ─── Search (v2.0+) ────────────────────────────────────────────────────
+  /**
+   * Permission-aware enumeration. Returns resources the caller has access
+   * to under a given scope. Wraps Drive's files.list with a q= query.
+   *
+   * Drive's q= query language is much richer than what the AIFS contract
+   * exposes — we deliberately stick to the minimal portable subset
+   * (scope, type, name_contains) so consumer collections work the same
+   * across backends (Drive, OneDrive, S3).
+   *
+   * Permission-awareness is automatic: Drive's files.list returns only
+   * files the calling identity can see. There is nothing for the
+   * adapter to do beyond translating the scope into a parents constraint.
+   *
+   * Truncation: if the first page returns max_results results AND
+   * Drive returns a nextPageToken, we mark truncated:true. We do NOT
+   * paginate — a truncated result is the caller's signal to narrow
+   * the query (smaller scope, more specific name_contains).
+   */
+  async search(query) {
+    this._ensureAuth();
+    const scope = query?.scope;
+    if (!scope || typeof scope !== "string" || !scope.startsWith("/")) {
+      throw new InvalidScopeError(scope, "must be an absolute path string");
+    }
+    const type = query.type || "any";
+    if (!["folder", "file", "any"].includes(type)) {
+      throw new InvalidScopeError(scope, `invalid type "${type}"`);
+    }
+    const nameContains = query.nameContains || query.name_contains || null;
+    const maxResults = Math.min(query.maxResults || query.max_results || 100, 1e3);
+    let parentId = null;
+    if (scope !== "/") {
+      parentId = await this._resolvePathToId(scope);
+      if (!parentId) {
+        throw new InvalidScopeError(scope, "scope path does not exist or is not visible");
+      }
+    }
+    const qParts = [];
+    if (parentId) {
+      qParts.push(`'${parentId}' in parents`);
+    }
+    if (type === "folder") {
+      qParts.push(`mimeType = 'application/vnd.google-apps.folder'`);
+    } else if (type === "file") {
+      qParts.push(`mimeType != 'application/vnd.google-apps.folder'`);
+    }
+    if (nameContains) {
+      const escaped = String(nameContains).replace(/'/g, "\\'");
+      qParts.push(`name contains '${escaped}'`);
+    }
+    qParts.push(`trashed = false`);
+    const q = qParts.join(" and ");
+    const params = {
+      q,
+      fields: "nextPageToken,files(id,name,mimeType,owners(emailAddress),modifiedTime,parents)",
+      pageSize: maxResults
+    };
+    if (this.connection.drive_id) {
+      params.driveId = this.connection.drive_id;
+      params.corpora = "drive";
+      params.includeItemsFromAllDrives = true;
+      params.supportsAllDrives = true;
+    }
+    let res;
+    try {
+      res = await this._withAutoRefresh(
+        () => this.drive.files.list(params)
+      );
+    } catch (err) {
+      this._handleDriveError(err, scope);
+    }
+    const files = res?.data?.files || [];
+    const truncated = !!res?.data?.nextPageToken;
+    const results = [];
+    for (const f of files) {
+      let path = this._idToPath(f.id);
+      if (!path) {
+        path = scope === "/" ? `/${f.name}` : `${scope.replace(/\/$/, "")}/${f.name}`;
+      }
+      const isFolder = f.mimeType === "application/vnd.google-apps.folder";
+      results.push({
+        path,
+        type: isFolder ? "folder" : "file",
+        name: f.name,
+        owner: f.owners?.[0]?.emailAddress || null,
+        modified: f.modifiedTime || null
+      });
+    }
+    return { results, truncated };
+  }
+  /**
+   * Transfer ownership of a path to a new owner.
+   *
+   * Optional operation per the SPEC. On Drive, the semantics differ
+   * sharply between personal Drive and Shared Drive:
+   *
+   * - **Shared Drive:** ownership belongs to the org/drive itself, not
+   *   to individual users. Per-file ownership transfer is not a
+   *   meaningful operation. We return NOT_IMPLEMENTED with a clear
+   *   message rather than pretending to do something. (For Shared
+   *   Drive offboarding, the appropriate action is to remove the
+   *   member from the drive at the Workspace level — agent-index
+   *   doesn't manage that.)
+   *
+   * - **Personal Drive:** permissions.create with role='owner',
+   *   type='user', and transferOwnership=true. Drive requires
+   *   sendNotificationEmail=true for ownership transfers — the
+   *   recipient must accept via email before the transfer
+   *   completes. We return {transferred: true} once the request
+   *   is initiated; the actual transfer is async.
+   */
+  async transferOwnership(path, newOwner) {
+    this._ensureAuth();
+    if (!newOwner || typeof newOwner !== "string" || !newOwner.includes("@")) {
+      throw new InvalidRecipientError(newOwner, "must be an email address");
+    }
+    if (this.connection.drive_id) {
+      throw new NotImplementedError(
+        "transferOwnership",
+        "Shared Drive \u2014 ownership belongs to the drive, not individual users. Manage drive membership at the Workspace level instead."
+      );
+    }
+    const fileId = await this._resolvePathToId(path);
+    if (!fileId) {
+      throw new PathNotFoundError(path);
+    }
+    const params = {
+      fileId,
+      requestBody: {
+        type: "user",
+        role: "owner",
+        emailAddress: newOwner
+      },
+      transferOwnership: true,
+      // Drive REQUIRES this to be true for ownership transfers — the
+      // new owner has to accept the transfer via email. There is no
+      // way around it in the Drive API, and silently not sending
+      // would either fail or leave the transfer in a half-state.
+      sendNotificationEmail: true
+    };
+    try {
+      await this._withAutoRefresh(
+        () => this.drive.permissions.create(params)
+      );
+    } catch (err) {
+      const message = err?.errors?.[0]?.message || err?.message || "";
+      const status = err.code || err.response?.status;
+      if (status === 403 && /domainPolicy|domain policy|outside.*workspace/i.test(message)) {
+        throw new InvalidRecipientError(newOwner, "recipient is outside the Workspace or blocked by Workspace policy");
+      }
+      if (status === 400 && /ownershipTransferNotPermitted|file type/i.test(message)) {
+        throw new BackendError(
+          `This file type does not support ownership transfer (${message})`,
+          err
+        );
+      }
+      this._handlePermissionError(err, path, newOwner, "owner");
+    }
+    return { transferred: true, path, new_owner: newOwner };
+  }
+  /**
+   * Map Drive permissions API errors to typed AIFS errors. Permission
+   * errors have richer semantics than file ops so they get their own
+   * mapper rather than reusing _handleDriveError.
+   */
+  _handlePermissionError(err, path, subject, role) {
+    const status = err.code || err.response?.status;
+    const message = err?.errors?.[0]?.message || err?.message || "";
+    switch (status) {
+      case 401:
+        throw new NotAuthenticatedError("expired");
+      case 403:
+        throw new AccessDeniedError(path, "share");
+      case 404:
+        throw new PathNotFoundError(path);
+      case 400:
+        if (/email|address|user does not exist/i.test(message)) {
+          throw new InvalidSubjectError(subject, message || "rejected by Drive");
+        }
+        if (/role/i.test(message)) {
+          throw new InvalidRoleError(role);
+        }
+        throw new BackendError(
+          `Google Drive permissions API error (400): ${message || err.message}`,
+          err
+        );
+      default:
+        throw new BackendError(
+          `Google Drive permissions API error (${status}): ${err.message}`,
+          err
+        );
+    }
+  }
 };
 
 // src/exec.mjs
@@ -42628,8 +43144,12 @@ async function routeToolCall(adapter, toolName, args) {
       if (args.encoding === "base64" && !content.startsWith("base64:")) {
         content = "base64:" + content;
       }
-      await adapter.write(args.path, content);
-      return { success: true, path: args.path };
+      const writeOptions = {};
+      if (typeof args.if_revision === "string" && args.if_revision.length > 0) {
+        writeOptions.ifRevision = args.if_revision;
+      }
+      const res = await adapter.write(args.path, content, writeOptions);
+      return { success: true, path: args.path, revision: res?.revision ?? null };
     }
     case "aifs_list": {
       requireArgs(toolName, args, [["path", "path"]]);
@@ -42666,6 +43186,39 @@ async function routeToolCall(adapter, toolName, args) {
         valid_actions: ["start", "complete"]
       });
     }
+    case "aifs_share": {
+      requireArgs(toolName, args, [["path", "path"], "subject", "role"]);
+      const options = {};
+      if (Object.prototype.hasOwnProperty.call(args, "inherit")) {
+        options.inherit = args.inherit;
+      }
+      return adapter.share(args.path, args.subject, args.role, options);
+    }
+    case "aifs_unshare": {
+      requireArgs(toolName, args, [["path", "path"], "subject"]);
+      return adapter.unshare(args.path, args.subject);
+    }
+    case "aifs_get_permissions": {
+      requireArgs(toolName, args, [["path", "path"]]);
+      const options = {};
+      if (Object.prototype.hasOwnProperty.call(args, "include_inherited")) {
+        options.includeInherited = args.include_inherited;
+      }
+      return adapter.getPermissions(args.path, options);
+    }
+    case "aifs_search": {
+      requireArgs(toolName, args, ["scope"]);
+      return adapter.search({
+        scope: args.scope,
+        type: args.type,
+        nameContains: args.name_contains,
+        maxResults: args.max_results
+      });
+    }
+    case "aifs_transfer_ownership": {
+      requireArgs(toolName, args, [["path", "path"], "new_owner"]);
+      return adapter.transferOwnership(args.path, args.new_owner);
+    }
     default:
       throw new AifsError("UNKNOWN_TOOL", `Unknown tool: ${toolName}`, { tool: toolName });
   }
@@ -42684,7 +43237,13 @@ async function main() {
         "aifs_delete",
         "aifs_copy",
         "aifs_auth_status",
-        "aifs_authenticate"
+        "aifs_authenticate",
+        // v2.0 ops (incremental rollout)
+        "aifs_share",
+        "aifs_unshare",
+        "aifs_get_permissions",
+        "aifs_search",
+        "aifs_transfer_ownership"
       ],
       examples: [
         `aifs-exec aifs_read '{"path":"/projects/foo/project.md"}'`,
