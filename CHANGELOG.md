@@ -6,6 +6,16 @@ Format: [MAJOR.MINOR.PATCH] — YYYY-MM-DD
 
 ---
 
+## [2.2.2] — 2026-05-07
+
+### Fixed
+
+- **`aifs_delete` no longer misdiagnoses permission denials as `FILE_NOT_FOUND`.** Closes bug `20260416-62a14c43` (open 21 days). On shared drives, Drive's `files.delete` returns `404` for permission denials (not `403`) when the caller lacks the organizer/contentManager role. The pre-2.2.2 code interpreted "404 from delete + same file ID returned by re-resolve" as "Drive really doesn't have it" and threw `FileNotFoundError`. The inference was backwards — the same ID coming back from `_resolvePathToId` (which queries `files.list`) means Drive *did* find the file, so the 404 from `files.delete` was a permission signal, not a missing-file signal. The new logic disambiguates: re-resolve → if file exists, throw `AccessDeniedError` with an actionable message ("On shared drives, files are typically owned by the drive itself; removing them requires the organizer or contentManager role. Ask your Workspace admin to remove the file…"). If re-resolve finds nothing, still throw `FileNotFoundError` (negative-existence case unchanged). The existing trash-via-update fallback inside `driveRemove` is unchanged — that path still runs first for writers who CAN trash.
+
+### Changed
+
+- **`AccessDeniedError` constructor accepts an optional `detail` argument** (in `agent-index-filesystem/src/errors.js`). Backward-compatible: existing one-arg and two-arg call sites work unchanged. New three-arg form lets callers attach actionable guidance to the error message. Used by the gdrive delete-permission-denial diagnostic above.
+
 ## [2.2.1] — 2026-05-04
 
 ### Fixed

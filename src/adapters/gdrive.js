@@ -936,17 +936,36 @@ export class GoogleDriveAdapter {
         this._handleDriveError(err, path);
         return;
       }
-      // 404 with a cached ID strongly suggests the cache is stale.
-      // Invalidate it and retry once with a fresh resolve from root.
+      // 404 from files.delete is ambiguous on Drive: it can mean either
+      // (a) the cached ID is stale (file deleted/moved out-of-band via
+      //     Drive UI, another process, etc.), OR
+      // (b) the caller lacks permission to permanently-delete or trash
+      //     the file. Drive returns 404 (not 403) for permission denials
+      //     on this op, presumably to avoid leaking the file's existence.
+      //     Common on shared drives where files are owned by the drive
+      //     itself and only organizers/contentManagers can remove them.
+      // Disambiguate by re-resolving the path: if Drive's files.list
+      // (which _resolvePathToId uses) still returns a file at this path,
+      // the file exists and the 404 was a permission signal. If the
+      // re-resolve returns nothing, the file genuinely doesn't exist.
+      // Closes bug 20260416-62a14c43.
+      const denialDetail =
+        'On shared drives, files are typically owned by the drive itself; ' +
+        'removing them requires the organizer or contentManager role. Ask ' +
+        'your Workspace admin to remove the file, or run this operation ' +
+        'from an account with the necessary permissions.';
       if (cached) {
         this.pathCache.delete(normalized);
         const freshId = await this._resolvePathToId(path);
         if (!freshId) {
+          // Re-resolve found nothing → file genuinely doesn't exist.
           throw new FileNotFoundError(path);
         }
         if (freshId === fileId) {
-          // Same ID came back fresh — Drive really doesn't have it.
-          throw new FileNotFoundError(path);
+          // Same ID came back fresh — Drive's files.list confirmed the
+          // file exists, so the 404 from files.delete was a permission
+          // denial. Throw an accurate diagnostic instead of FILE_NOT_FOUND.
+          throw new AccessDeniedError(path, 'delete or trash', denialDetail);
         }
         try {
           await driveRemove(freshId);
@@ -957,7 +976,14 @@ export class GoogleDriveAdapter {
           return;
         }
       }
-      throw new FileNotFoundError(path);
+      // No cached entry was originally present. Disambiguate the same
+      // way: if Drive's files.list finds the file, the 404 was a
+      // permission denial; otherwise it's a genuine missing file.
+      const freshId = await this._resolvePathToId(path);
+      if (!freshId) {
+        throw new FileNotFoundError(path);
+      }
+      throw new AccessDeniedError(path, 'delete or trash', denialDetail);
     }
   }
 

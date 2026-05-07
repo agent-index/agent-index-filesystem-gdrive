@@ -41367,8 +41367,12 @@ var PathNotFoundError = class extends AifsError {
   }
 };
 var AccessDeniedError = class extends AifsError {
-  constructor(path, action = "access") {
-    super("ACCESS_DENIED", `Permission denied to ${action}: ${path}`, { path });
+  constructor(path, action = "access", detail = null) {
+    let message = `Permission denied to ${action}: ${path}`;
+    if (detail) {
+      message += `. ${detail}`;
+    }
+    super("ACCESS_DENIED", message, { path });
   }
 };
 var NotAuthenticatedError = class extends AifsError {
@@ -42093,17 +42097,18 @@ var GoogleDriveAdapter = class {
         this._handleDriveError(err, path);
         return;
       }
+      const denialDetail = "On shared drives, files are typically owned by the drive itself; removing them requires the organizer or contentManager role. Ask your Workspace admin to remove the file, or run this operation from an account with the necessary permissions.";
       if (cached2) {
         this.pathCache.delete(normalized);
-        const freshId = await this._resolvePathToId(path);
-        if (!freshId) {
+        const freshId2 = await this._resolvePathToId(path);
+        if (!freshId2) {
           throw new FileNotFoundError(path);
         }
-        if (freshId === fileId) {
-          throw new FileNotFoundError(path);
+        if (freshId2 === fileId) {
+          throw new AccessDeniedError(path, "delete or trash", denialDetail);
         }
         try {
-          await driveRemove(freshId);
+          await driveRemove(freshId2);
           this.pathCache.delete(normalized);
           return;
         } catch (retryErr) {
@@ -42111,7 +42116,11 @@ var GoogleDriveAdapter = class {
           return;
         }
       }
-      throw new FileNotFoundError(path);
+      const freshId = await this._resolvePathToId(path);
+      if (!freshId) {
+        throw new FileNotFoundError(path);
+      }
+      throw new AccessDeniedError(path, "delete or trash", denialDetail);
     }
   }
   async copy(source, destination) {
