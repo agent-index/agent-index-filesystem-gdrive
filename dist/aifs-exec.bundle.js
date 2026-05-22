@@ -42666,6 +42666,33 @@ var GoogleDriveAdapter = class {
     if (!fileId) {
       throw new PathNotFoundError(path);
     }
+    if (options.inherit === false) {
+      const updateParams = {
+        fileId,
+        requestBody: {
+          inheritedPermissionsDisabled: true
+        }
+      };
+      if (this.connection.drive_id) {
+        updateParams.supportsAllDrives = true;
+      }
+      try {
+        await this._withAutoRefresh(
+          () => this.drive.files.update(updateParams)
+        );
+      } catch (err) {
+        const message = err?.errors?.[0]?.message || err?.message || "";
+        const code = err?.code || err?.response?.status;
+        if (code === 403 || /permission|forbidden|insufficient/i.test(message)) {
+          throw new AccessDeniedError(
+            path,
+            subject,
+            "inherit:false requires organizer role on this Shared Drive (or owner on My Drive). The applying user does not have sufficient role to disable parent-folder inheritance. Either grant organizer role first, or apply this share without inherit:false (parent inheritance will then apply)."
+          );
+        }
+        throw err;
+      }
+    }
     const params = {
       fileId,
       requestBody: {
@@ -42681,7 +42708,6 @@ var GoogleDriveAdapter = class {
     if (this.connection.drive_id) {
       params.supportsAllDrives = true;
     }
-    void options.inherit;
     let res;
     try {
       res = await this._withAutoRefresh(
@@ -42705,7 +42731,8 @@ var GoogleDriveAdapter = class {
     return {
       shared: true,
       permission_id: res?.data?.id ?? null,
-      path
+      path,
+      inherit_disabled: options.inherit === false
     };
   }
   /**

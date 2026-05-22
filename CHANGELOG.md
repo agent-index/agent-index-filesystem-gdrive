@@ -6,6 +6,30 @@ Format: [MAJOR.MINOR.PATCH] — YYYY-MM-DD
 
 ---
 
+## [2.3.0] — 2026-05-20
+
+### Fixed
+
+- **`share()` actually implements `inherit: false`.** Pre-2.3.0 the option was accepted from callers but discarded with `void options.inherit;`. The original comment cited a Shared-Drive-non-member assumption that doesn't hold when the recipient is already a drive member (e.g., an all-members group). On the client-intelligence install (per-instance ACLs underneath an all-members-Writer parent), the gap surfaced as: every collection member retained Writer access on every instance via inherited parent permissions, regardless of the explicit grant. Documented as the V1 limitation in idea `helper-spec-needs-inherit-passthrough`. Identified during the 3.7.3 release blocker check.
+
+  **New behavior:** when `options.inherit === false`, `share()` first calls `drive.files.update` with `inheritedPermissionsDisabled: true` on the file resource (the Drive-canonical mechanism for limited-access folders; works on both Shared Drives and My Drive), then proceeds to the existing `permissions.create` call. Order is deliberate — disabling inheritance first prevents any transient window where the recipient has broader (inherited) access than intended.
+
+  **Permission requirement:** setting `inheritedPermissionsDisabled` requires `organizer` role on the Shared Drive (or `owner` on My Drive). If the applying user (whoever's OAuth token is in effect — typically the user who clicked Accept on the permission-helper review page) lacks that role, `share()` raises `AccessDeniedError` with an actionable message before the explicit grant runs. No partial state results.
+
+  **Return shape:** `share()` now also returns `inherit_disabled: <boolean>` alongside the existing fields, confirming to callers what semantics were applied.
+
+  **Backward compatible:** specs without `inherit` (or with `inherit: true`) behave exactly as 2.2.x. Only `inherit: false` triggers the new path.
+
+  Companion: agent-index-core 3.7.3 ships the helper-spec v1.1 plumbing (validate.js + apply.js + page.html + the skill spec) that propagates `inherit` from caller specs through to this adapter. Closes bug `20260519-8d20ea22` (the broader permission-helper trust-contract realignment) end-to-end with respect to the inherit-passthrough piece; client-intelligence callers activate the `inherit: false` use case in the same release (per the V1 limitation note in `helper-spec-needs-inherit-passthrough`).
+
+### Notes
+
+- `adapter.json` version 2.2.2 → 2.3.0. `package.json` version 2.2.2 → 2.3.0. `contract_version` unchanged at 2.0.0 (no contract change; just an implementation fix). `supported_operations` unchanged. Bundle SHA-256 changes; `bundle_built_at` refreshed.
+- No other op semantics change. `unshare()` does not touch `inheritedPermissionsDisabled` — once set, the flag persists across share/unshare cycles. Re-enabling inheritance when the last explicit grant is removed is intentionally out of scope; it's a separate semantic worth its own idea if ever needed.
+- A preflight check that warns when a spec uses `inherit: false` against an adapter advertising `contract_version < 2.0.0` is filed in core-improvements `helper-spec-needs-inherit-passthrough` section 4 (deferred from 3.7.3, stays in the parent idea).
+
+---
+
 ## [2.2.2] — 2026-05-07
 
 ### Fixed

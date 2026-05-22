@@ -1642,6 +1642,63 @@ export class GoogleDriveAdapter {
       throw new PathNotFoundError(path);
     }
 
+    // inherit:false handling (implemented in 2.3.0).
+    //
+    // When inherit:false is requested, the recipient should see ONLY this
+    // resource — not anything inherited from the parent folder. The Drive-
+    // canonical mechanism is files.update with inheritedPermissionsDisabled:
+    // true on the file resource. Works on both Shared Drives and My Drive
+    // (the documented "limited access" folder mechanism).
+    //
+    // Setting inheritedPermissionsDisabled requires organizer role on the
+    // Shared Drive (or owner on My Drive). The applying user — whoever's
+    // OAuth token is in effect — must have that role.
+    //
+    // Order: disable inheritance FIRST, then add the explicit grant. This
+    // prevents any transient window where the recipient has broader
+    // (inherited) access than intended.
+    //
+    // Pre-2.3.0 the option was accepted from callers but discarded with
+    // `void options.inherit;`. The original adapter comment cited a Shared-
+    // Drive-non-member assumption that doesn't hold when the recipient is
+    // already a drive member (e.g., an all-members group). See bug
+    // 20260519-8d20ea22-2 context and idea helper-spec-needs-inherit-
+    // passthrough for the design history.
+    if (options.inherit === false) {
+      const updateParams = {
+        fileId,
+        requestBody: {
+          inheritedPermissionsDisabled: true,
+        },
+      };
+      if (this.connection.drive_id) {
+        updateParams.supportsAllDrives = true;
+      }
+      try {
+        await this._withAutoRefresh(() =>
+          this.drive.files.update(updateParams)
+        );
+      } catch (err) {
+        const message = err?.errors?.[0]?.message || err?.message || '';
+        const code = err?.code || err?.response?.status;
+        // Most likely failure: caller lacks organizer role on the Shared
+        // Drive (or owner on My Drive). Surface as a clean AccessDeniedError
+        // BEFORE the explicit grant runs — we don't want an over-permissive
+        // state where the grant is added but inheritance stays active.
+        if (code === 403 || /permission|forbidden|insufficient/i.test(message)) {
+          throw new AccessDeniedError(
+            path,
+            subject,
+            'inherit:false requires organizer role on this Shared Drive (or owner on My Drive). ' +
+            'The applying user does not have sufficient role to disable parent-folder inheritance. ' +
+            'Either grant organizer role first, or apply this share without inherit:false (parent inheritance will then apply).'
+          );
+        }
+        // Unexpected — let it bubble.
+        throw err;
+      }
+    }
+
     const params = {
       fileId,
       requestBody: {
@@ -1658,17 +1715,6 @@ export class GoogleDriveAdapter {
     if (this.connection.drive_id) {
       params.supportsAllDrives = true;
     }
-
-    // inherit:false handling.
-    // On a Shared Drive, granting an explicit permission to a user who
-    // isn't already a drive member scopes the share to that resource —
-    // exactly the path-B semantics we want. On personal Drive, an
-    // explicit permission on a child folder is in addition to (not a
-    // restriction of) the parent's permissions, but for the path-B
-    // model where non-admins aren't drive members, this is again the
-    // right behavior. inherit:false is currently a hint; future work
-    // can add per-file restriction policies for v2.1+.
-    void options.inherit;
 
     let res;
     try {
@@ -1698,6 +1744,7 @@ export class GoogleDriveAdapter {
       shared: true,
       permission_id: res?.data?.id ?? null,
       path,
+      inherit_disabled: options.inherit === false,
     };
   }
 
