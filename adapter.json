@@ -1,7 +1,7 @@
 {
   "name": "agent-index-filesystem-gdrive",
   "display_name": "Google Drive",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Filesystem adapter for Google Drive and Shared Drives",
   "author": "agent-index",
   "license": "proprietary",
@@ -60,6 +60,6 @@
   "node_min_version": "18.0.0",
   "exec_bundle_entry": "dist/aifs-exec.bundle.js",
   "exec_shell_wrapper": "dist/aifs-exec.sh",
-  "bundle_built_at": "2026-05-21T00:24:41.000Z",
-  "exec_bundle_checksum": "sha256:03811169837d585fb9db256b754129f9d0335bdf910c9855a3f0330d0a423bd3"
+  "bundle_built_at": "2026-05-24T17:40:20Z",
+  "exec_bundle_checksum": "sha256:60529b80e01b7e69a7094bdd063114099553a198d7e7463b213e85b952c10e95"
 }

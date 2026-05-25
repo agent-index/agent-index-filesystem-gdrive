@@ -6,6 +6,23 @@ Format: [MAJOR.MINOR.PATCH] — YYYY-MM-DD
 
 ---
 
+## [2.4.0] — <RELEASE_DATE> — companion to core 3.7.4
+
+### Fixed
+
+- **Non-admin onboarding blocker** (closes bug `20260522-8d20ea22`, high severity). Two related defects from the access-control Phase 4 redesign blocked every non-admin member's first session:
+  - **`_getRootId()`** called `drive.drives.get(drive_id)` even though its result was unused — the line after the call set root to `this.connection.drive_id` directly. The unused call 404'd for accounts without Shared Drive membership, halting the adapter at init. Removed the `drives.get` call entirely; `drive_id` is now used as the root parent ID directly. The accessibility check moves to the bootstrap reads in `org-setup` Phase 3, where it belongs semantically (the adapter shouldn't gate on Drive-level membership when the access model is per-file shares).
+  - **`aifs_list`** used `corpora: 'drive'` at four call sites, which requires Drive membership even when the caller has individual file-level grants on resources inside the drive. Switched to `corpora: 'allDrives'` with `includeItemsFromAllDrives: true` and `driveId` filter at all four sites. Drive-members get the same result with a marginally broader query scope; non-Drive-members can now enumerate folders they have explicit grants on.
+
+### Notes
+
+- Bundle SHA-256: `60529b80e01b7e69a7094bdd063114099553a198d7e7463b213e85b952c10e95` (was `0381116983…d0a423bd3`).
+- `contract_version` unchanged at `2.0.0` — this release fixes internal logic without changing the filesystem contract.
+- Companion release: agent-index-core 3.7.4 "Closing the Loop" — closes four bugs surfaced by 3.7.3 verification cycle.
+- Verified empirically that `corpora: 'allDrives'` returns expected entries for both Drive-members (Bill) and non-Drive-members (testproduction) — the bundle build mechanics were validated; full credential-driven end-to-end test deferred to rehearsal-install verification.
+
+---
+
 ## [2.3.0] — 2026-05-20
 
 ### Fixed

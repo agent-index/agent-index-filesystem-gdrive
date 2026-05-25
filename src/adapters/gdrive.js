@@ -732,7 +732,7 @@ export class GoogleDriveAdapter {
       if (this.connection.drive_id) {
         queryParams.supportsAllDrives = true;
         queryParams.includeItemsFromAllDrives = true;
-        queryParams.corpora = 'drive';
+        queryParams.corpora = 'allDrives';
         queryParams.driveId = this.connection.drive_id;
       }
 
@@ -1077,7 +1077,7 @@ export class GoogleDriveAdapter {
       if (this.connection.drive_id) {
         queryParams.supportsAllDrives = true;
         queryParams.includeItemsFromAllDrives = true;
-        queryParams.corpora = 'drive';
+        queryParams.corpora = 'allDrives';
         queryParams.driveId = this.connection.drive_id;
       }
 
@@ -1116,17 +1116,15 @@ export class GoogleDriveAdapter {
       return this.connection.root_folder_id;
     }
 
-    // If on a shared drive, resolve the drive's root folder
+    // If on a shared drive, use the drive ID directly as the root parent.
+    // Pre-2.4.0 this called drives.get(drive_id) for an accessibility check
+    // before returning drive_id, but the call's result was unused and 404'd
+    // for accounts without Shared Drive membership — blocking every non-admin
+    // member's onboarding (bug 20260522-8d20ea22). The accessibility check
+    // moves to the bootstrap reads in org-setup Phase 3, where it belongs
+    // semantically: the adapter shouldn't gate on Drive-level membership when
+    // the access model is per-file shares.
     if (this.connection.drive_id) {
-      const params = {
-        driveId: this.connection.drive_id,
-        fields: 'id',
-        supportsAllDrives: true,
-      };
-      const res = await this._withAutoRefresh(() =>
-        this.drive.drives.get(params)
-      );
-      // The drive ID itself serves as the root parent for queries
       this.pathCache.set('/', {
         id: this.connection.drive_id,
         mimeType: 'application/vnd.google-apps.folder',
@@ -1250,7 +1248,7 @@ export class GoogleDriveAdapter {
       if (this.connection.drive_id) {
         queryParams.supportsAllDrives = true;
         queryParams.includeItemsFromAllDrives = true;
-        queryParams.corpora = 'drive';
+        queryParams.corpora = 'allDrives';
         queryParams.driveId = this.connection.drive_id;
       }
 
@@ -1997,7 +1995,7 @@ export class GoogleDriveAdapter {
     };
     if (this.connection.drive_id) {
       params.driveId = this.connection.drive_id;
-      params.corpora = 'drive';
+      params.corpora = 'allDrives';
       params.includeItemsFromAllDrives = true;
       params.supportsAllDrives = true;
     }
