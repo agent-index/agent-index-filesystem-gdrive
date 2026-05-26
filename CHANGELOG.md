@@ -6,20 +6,35 @@ Format: [MAJOR.MINOR.PATCH] — YYYY-MM-DD
 
 ---
 
-## [2.4.0] — <RELEASE_DATE> — companion to core 3.7.4
+## [2.4.1] — <RELEASE_DATE> — companion to core 3.7.4
 
 ### Fixed
 
-- **Non-admin onboarding blocker** (closes bug `20260522-8d20ea22`, high severity). Two related defects from the access-control Phase 4 redesign blocked every non-admin member's first session:
-  - **`_getRootId()`** called `drive.drives.get(drive_id)` even though its result was unused — the line after the call set root to `this.connection.drive_id` directly. The unused call 404'd for accounts without Shared Drive membership, halting the adapter at init. Removed the `drives.get` call entirely; `drive_id` is now used as the root parent ID directly. The accessibility check moves to the bootstrap reads in `org-setup` Phase 3, where it belongs semantically (the adapter shouldn't gate on Drive-level membership when the access model is per-file shares).
-  - **`aifs_list`** used `corpora: 'drive'` at four call sites, which requires Drive membership even when the caller has individual file-level grants on resources inside the drive. Switched to `corpora: 'allDrives'` with `includeItemsFromAllDrives: true` and `driveId` filter at all four sites. Drive-members get the same result with a marginally broader query scope; non-Drive-members can now enumerate folders they have explicit grants on.
+- **Non-admin onboarding blocker, properly this time** (closes bug `20260522-8d20ea22`, high severity). Verified empirically against two real accounts (Bill: Drive-member; testproduction: non-Drive-member). 2.4.0 attempted this fix but shipped with a broken `corpora: 'allDrives'` + `driveId` combination that the Drive API rejects ("driveId must be specified if and only if corpora is set to drive"). 2.4.1 replaces it with three coordinated changes:
+
+  1. **`_detectDriveMembership()` (new)** probes Shared Drive membership at first need via fail-open `drives.get(driveId)` — 200 → member; 404 → non-member; other → rethrow. Result cached on the adapter instance.
+
+  2. **`_listParams()` (new)** branches every `files.list` query based on membership:
+     - Member: `corpora: 'drive'` + `driveId` (the pre-2.4.0 admin path — known good)
+     - Non-member: `corpora: 'user'` (no `driveId` — required by the Drive API constraint)
+     Both branches set `supportsAllDrives: true` + `includeItemsFromAllDrives: true` when `driveId` is configured.
+
+  3. **Drive-root fallback for path-walking** in `_resolvePathToId`: when an "in parents = `driveId` and name = X" query returns 0 results for a non-Drive-member, fall back to global name search with `corpora: 'allDrives'`. Non-Drive-members cannot enumerate the Drive root itself (`'driveId' in parents` returns nothing), but global name search returns entries they have direct access to. This is what allows path-walking from drive root to succeed for non-Drive-members once invite-member 1.3.0 has applied the direct shares.
+
+  All four `corpora: 'drive'` literal sites in 2.3.0 (and the broken `corpora: 'allDrives'` + `driveId` sites in 2.4.0) now route through `_listParams()`. The single remaining `corpora: 'allDrives'` reference is the intentional drive-root fallback.
+
+  **2.4.1 requires invite-member 1.3.0 (shipping in agent-index-core 3.7.4) for the direct-share grants that make path resolution work for non-Drive-members.** Existing non-admin members need a one-time backfill — see core 3.7.4 release notes.
 
 ### Notes
 
-- Bundle SHA-256: `60529b80e01b7e69a7094bdd063114099553a198d7e7463b213e85b952c10e95` (was `0381116983…d0a423bd3`).
-- `contract_version` unchanged at `2.0.0` — this release fixes internal logic without changing the filesystem contract.
-- Companion release: agent-index-core 3.7.4 "Closing the Loop" — closes four bugs surfaced by 3.7.3 verification cycle.
-- Verified empirically that `corpora: 'allDrives'` returns expected entries for both Drive-members (Bill) and non-Drive-members (testproduction) — the bundle build mechanics were validated; full credential-driven end-to-end test deferred to rehearsal-install verification.
+- Bundle SHA-256: `cf6402129a2f807cb859833b1661ba0be977d499dae0420e438033762f790408` (was `60529b80…b952c10e95` in 2.4.0; original `0381116983…d0a423bd3` in 2.3.0).
+- `contract_version` unchanged at `2.0.0` — this release fixes internal logic; no contract change.
+- **2.4.0 should NOT be installed.** It is broken (Drive API rejects every list operation for any user). 2.4.1 supersedes it. Members who already applied 2.4.0 should run `@ai:update` to pick up 2.4.1 immediately.
+- **Empirical verification (this time):** `tmp/aifs-exec-241.bundle.js` tested against Bill's and testproduction's actual gdrive credentials with the full two-account suite (`test-final.mjs`): 13 of 13 operations pass. Bill: membership=true, all reads/lists succeed. testproduction before direct share: membership=false, listing fails gracefully with PATH_NOT_FOUND. testproduction with direct share on `/shared/` (simulating invite-member 1.3.0): all reads/lists succeed and return the same entries Bill sees.
+
+### Retro lesson explicit
+
+The 2.4.0 bug shipped because the WS1 pre-build empirical-verification step couldn't run from the build session (no OAuth credentials). Mechanical bundle verification passed (correct strings in bundle) but the API constraint was never tested. 2.4.1 was written by uploading testproduction's actual credentials and running the two-account suite BEFORE the version bump. This pattern is now adopted as the gdrive-adapter release requirement: any change touching `files.list` query parameters or `drives.get` MUST run the two-account empirical suite before commit.
 
 ---
 

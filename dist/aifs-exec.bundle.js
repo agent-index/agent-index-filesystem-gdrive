@@ -41585,6 +41585,7 @@ var GoogleDriveAdapter = class {
     this.oauth2Client = null;
     this.drive = null;
     this.pathCache = /* @__PURE__ */ new Map();
+    this._isDriveMember = null;
     this._folderLocks = /* @__PURE__ */ new Map();
     this._lockDir = null;
     this._callbackServer = null;
@@ -41934,10 +41935,7 @@ var GoogleDriveAdapter = class {
         pageSize: 1e3
       };
       if (this.connection.drive_id) {
-        queryParams.supportsAllDrives = true;
-        queryParams.includeItemsFromAllDrives = true;
-        queryParams.corpora = "allDrives";
-        queryParams.driveId = this.connection.drive_id;
+        Object.assign(queryParams, await this._listParams());
       }
       do {
         if (pageToken) {
@@ -42188,24 +42186,44 @@ var GoogleDriveAdapter = class {
         currentPath = childPath;
         continue;
       }
+      const baseParams = await this._listParams();
       const queryParams = {
+        ...baseParams,
         q: `'${currentId}' in parents and name = '${segment.replace(/'/g, "\\'")}' and trashed = false`,
         fields: "files(id, name, mimeType)",
         pageSize: 1
       };
-      if (this.connection.drive_id) {
-        queryParams.supportsAllDrives = true;
-        queryParams.includeItemsFromAllDrives = true;
-        queryParams.corpora = "allDrives";
-        queryParams.driveId = this.connection.drive_id;
-      }
       const res = await this._withAutoRefresh(
         () => this.drive.files.list(queryParams)
       );
-      if (!res.data.files || res.data.files.length === 0) {
+      let file2 = res.data.files && res.data.files[0];
+      if (!file2 && this.connection.drive_id && currentId === this.connection.drive_id) {
+        const isMember = await this._detectDriveMembership();
+        if (!isMember) {
+          const fallbackRes = await this._withAutoRefresh(
+            () => this.drive.files.list({
+              supportsAllDrives: true,
+              includeItemsFromAllDrives: true,
+              corpora: "allDrives",
+              q: `name = '${segment.replace(/'/g, "\\'")}' and trashed = false`,
+              fields: "files(id, name, mimeType, parents)",
+              pageSize: 10
+            })
+          );
+          const fallbackFiles = fallbackRes.data.files || [];
+          if (fallbackFiles.length > 0) {
+            file2 = fallbackFiles[0];
+            if (fallbackFiles.length > 1) {
+              console.error(
+                `[aifs] Notice: ${fallbackFiles.length} files named '${segment}' at drive root are accessible; picked first (id=${file2.id}).`
+              );
+            }
+          }
+        }
+      }
+      if (!file2) {
         return null;
       }
-      const file2 = res.data.files[0];
       this.pathCache.set(childPath, { id: file2.id, mimeType: file2.mimeType });
       currentId = file2.id;
       currentPath = childPath;
@@ -42239,6 +42257,78 @@ var GoogleDriveAdapter = class {
       mimeType: "application/vnd.google-apps.folder"
     });
     return "root";
+  }
+  /**
+   * Detect whether the authenticated user is a member of the configured Shared
+   * Drive. Cached in-memory after first probe. Added in 2.4.1 to close bug
+   * 20260522-8d20ea22 — the access-control Phase 4 redesign moved non-admin
+   * members OFF Shared Drive membership and onto file-level grants via the
+   * all-members group. The Drive API treats these very differently:
+   *
+   *   - corpora: 'drive' + driveId           → requires Shared Drive membership
+   *   - corpora: 'user' / 'allDrives'        → does NOT accept driveId
+   *
+   * So the adapter must branch at every files.list site based on membership.
+   * This method is the membership probe. Fail-open on 404 (the non-member
+   * signal); rethrow on other errors.
+   *
+   * If no drive_id is configured (the My Drive setup), we treat the user as
+   * a "member" of their own drive — same query shape works.
+   */
+  async _detectDriveMembership() {
+    if (this._isDriveMember !== null) {
+      return this._isDriveMember;
+    }
+    if (!this.connection.drive_id) {
+      this._isDriveMember = true;
+      return true;
+    }
+    try {
+      await this._withAutoRefresh(
+        () => this.drive.drives.get({
+          driveId: this.connection.drive_id,
+          fields: "id",
+          supportsAllDrives: true
+        })
+      );
+      this._isDriveMember = true;
+    } catch (e) {
+      const code = e.code || e.response?.status;
+      if (code === 404) {
+        this._isDriveMember = false;
+      } else {
+        throw e;
+      }
+    }
+    return this._isDriveMember;
+  }
+  /**
+   * Build the right files.list query parameters for the current user. Closes
+   * the 2.4.0 API constraint bug by branching on Drive membership:
+   *
+   *   - Member:     corpora: 'drive' + driveId
+   *   - Non-member: corpora: 'user' (no driveId — API rejects driveId with
+   *                 corpora other than 'drive')
+   *
+   * Both branches set supportsAllDrives + includeItemsFromAllDrives when a
+   * driveId is configured, so files inside the Shared Drive surface in either
+   * mode (subject to the user's actual access rights).
+   */
+  async _listParams() {
+    const params = {};
+    if (!this.connection.drive_id) {
+      return params;
+    }
+    params.supportsAllDrives = true;
+    params.includeItemsFromAllDrives = true;
+    const isMember = await this._detectDriveMembership();
+    if (isMember) {
+      params.corpora = "drive";
+      params.driveId = this.connection.drive_id;
+    } else {
+      params.corpora = "user";
+    }
+    return params;
   }
   /**
    * Ensure all parent directories exist, creating them as needed.
@@ -42323,10 +42413,7 @@ var GoogleDriveAdapter = class {
         pageSize: 1
       };
       if (this.connection.drive_id) {
-        queryParams.supportsAllDrives = true;
-        queryParams.includeItemsFromAllDrives = true;
-        queryParams.corpora = "allDrives";
-        queryParams.driveId = this.connection.drive_id;
+        Object.assign(queryParams, await this._listParams());
       }
       const res = await this._withAutoRefresh(
         () => this.drive.files.list(queryParams)
@@ -42938,10 +43025,7 @@ var GoogleDriveAdapter = class {
       pageSize: maxResults
     };
     if (this.connection.drive_id) {
-      params.driveId = this.connection.drive_id;
-      params.corpora = "allDrives";
-      params.includeItemsFromAllDrives = true;
-      params.supportsAllDrives = true;
+      Object.assign(params, await this._listParams());
     }
     let res;
     try {
