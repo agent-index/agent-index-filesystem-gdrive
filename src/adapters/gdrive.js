@@ -869,6 +869,7 @@ export class GoogleDriveAdapter {
       );
 
       return {
+        id: fileId,
         size: parseInt(res.data.size || '0', 10),
         modified: res.data.modifiedTime,
         created: res.data.createdTime,
@@ -1061,10 +1062,30 @@ export class GoogleDriveAdapter {
       return cached.id;
     }
 
-    // Walk from root
-    const segments = normalized.split('/').filter(Boolean);
-    let currentId = await this._getRootId();
-    let currentPath = '/';
+    // Anchored ("id:{folderId}/..."): resolve relative to a known folder ID,
+    // walking downward only. The caller has access from the anchor down even if
+    // they cannot enumerate the anchor's ancestors (bug 20260522-8d20ea22). The
+    // drive-root non-member fallback below never fires here because currentId
+    // starts at the anchor, not drive_id.
+    let segments, currentId, currentPath;
+    const anchorMatch = /^id:([^/]+)(?:\/(.*))?$/.exec(normalized);
+    if (anchorMatch) {
+      currentId = anchorMatch[1];
+      currentPath = `id:${currentId}`;
+      segments = anchorMatch[2] ? anchorMatch[2].split('/').filter(Boolean) : [];
+      if (segments.length === 0) {
+        this.pathCache.set(normalized, {
+          id: currentId,
+          mimeType: 'application/vnd.google-apps.folder',
+        });
+        return currentId;
+      }
+    } else {
+      // Walk from root
+      segments = normalized.split('/').filter(Boolean);
+      currentId = await this._getRootId();
+      currentPath = '/';
+    }
 
     for (const segment of segments) {
       const childPath = currentPath === '/' ? `/${segment}` : `${currentPath}/${segment}`;
@@ -1342,10 +1363,19 @@ export class GoogleDriveAdapter {
       return existingId;
     }
 
-    // Walk and create missing segments
-    const segments = normalized.split('/').filter(Boolean);
-    let currentId = await this._getRootId();
-    let currentPath = '/';
+    // Walk and create missing segments (anchor-aware: "id:{folderId}/..." starts
+    // at the anchor folder, not the drive root — bug 20260522-8d20ea22).
+    let segments, currentId, currentPath;
+    const anchorMatch = /^id:([^/]+)(?:\/(.*))?$/.exec(normalized);
+    if (anchorMatch) {
+      currentId = anchorMatch[1];
+      currentPath = `id:${currentId}`;
+      segments = anchorMatch[2] ? anchorMatch[2].split('/').filter(Boolean) : [];
+    } else {
+      segments = normalized.split('/').filter(Boolean);
+      currentId = await this._getRootId();
+      currentPath = '/';
+    }
 
     for (const segment of segments) {
       const childPath = currentPath === '/' ? `/${segment}` : `${currentPath}/${segment}`;
@@ -1640,6 +1670,20 @@ export class GoogleDriveAdapter {
   // ─── Helpers ──────────────────────────────────────────────────────────
 
   _normalizePath(path) {
+    // Anchored path: "id:{folderId}[/rel/segments]" — resolve relative to a known
+    // folder ID. Used for member-private space and items shared with the caller,
+    // which a non-Drive-member cannot reach by walking from the drive root
+    // (bug 20260522-8d20ea22). Preserve the anchor token; normalize only the
+    // relative remainder; no leading slash.
+    const anchor = /^id:([^/]+)(?:\/(.*))?$/.exec(path);
+    if (anchor) {
+      const id = anchor[1];
+      const rel = (anchor[2] || '')
+        .replace(/^\/+/, '')
+        .replace(/\/+$/, '')
+        .replace(/\/+/g, '/');
+      return rel ? `id:${id}/${rel}` : `id:${id}`;
+    }
     let p = '/' + path.replace(/^\/+/, '').replace(/\/+$/, '');
     p = p.replace(/\/+/g, '/');
     if (p === '') p = '/';
