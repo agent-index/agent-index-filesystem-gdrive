@@ -1144,31 +1144,41 @@ export class GoogleDriveAdapter {
               pageSize: 10,
             })
           );
-          // db13 (2.5.1): parent-constrain the global name search. The
-          // unconstrained query matches same-named folders ANYWHERE the user
-          // has access (e.g. /shared/{name}, strays in the user's My Drive),
-          // so picking the first silently resolved the wrong folder
-          // (bug 20260606-62a14c43-230135-db13). Keep only candidates whose
-          // parent is the drive root we're resolving against. If still >1,
-          // FAIL LOUD with the candidate list rather than guessing — the
-          // caller should disambiguate with an id: anchor.
+          // db13 (2.5.1): disambiguate the global name search WITHOUT breaking the
+          // common single-match case. The unconstrained query matches same-named folders
+          // anywhere the user has access (e.g. /shared/{name}, strays in My Drive); picking
+          // the first silently resolved the wrong folder (bug 20260606-62a14c43-230135-db13).
+          // BUT a non-Drive-member's view of a directly-shared folder often OMITS the
+          // (inaccessible) drive-root parent from `parents`, so we must NOT parent-filter a
+          // single legitimate match away (regression: filtering-before-counting made the whole
+          // /shared tree resolve to null for non-members — caught in 2.5.1 staging). So:
+          // parent-matching is a TIE-BREAKER applied only when there is more than one candidate.
           const allFallback = fallbackRes.data.files || [];
-          const fallbackFiles = allFallback.filter(
-            (f) => Array.isArray(f.parents) && f.parents.includes(currentId)
-          );
-          if (fallbackFiles.length === 1) {
-            file = fallbackFiles[0];
-          } else if (fallbackFiles.length > 1) {
-            const candidates = fallbackFiles
-              .map((f) => `${f.id} (parent ${(f.parents || []).join(',')})`)
-              .join('; ');
-            throw new Error(
-              `[aifs] Ambiguous path segment '${segment}' at drive root: ` +
-                `${fallbackFiles.length} folders named '${segment}' share the drive root as parent. ` +
-                `Candidates: ${candidates}. Resolve with an id:{folderId} anchor to disambiguate.`
+          if (allFallback.length === 1) {
+            // Single accessible match — use it as-is. No parent check (parent may be invisible).
+            file = allFallback[0];
+          } else if (allFallback.length > 1) {
+            // Multiple same-named accessible folders — disambiguate by parent == drive root.
+            const parentMatched = allFallback.filter(
+              (f) => Array.isArray(f.parents) && f.parents.includes(currentId)
             );
+            if (parentMatched.length === 1) {
+              file = parentMatched[0];
+            } else {
+              // Zero or several share the expected parent (or parents aren't visible) —
+              // FAIL LOUD with the candidate list rather than guessing.
+              const candidates = allFallback
+                .map((f) => `${f.id} (parent ${(f.parents || []).join(',') || 'n/a'})`)
+                .join('; ');
+              throw new Error(
+                `[aifs] Ambiguous path segment '${segment}': ` +
+                  `${allFallback.length} accessible folders named '${segment}', ` +
+                  `${parentMatched.length} under the expected parent. ` +
+                  `Candidates: ${candidates}. Resolve with an id:{folderId} anchor to disambiguate.`
+              );
+            }
           }
-          // length 0 after the parent filter → file stays unset → not found.
+          // length 0 → file stays unset → not found.
         }
       }
 

@@ -42228,16 +42228,20 @@ var GoogleDriveAdapter = class {
             })
           );
           const allFallback = fallbackRes.data.files || [];
-          const fallbackFiles = allFallback.filter(
-            (f) => Array.isArray(f.parents) && f.parents.includes(currentId)
-          );
-          if (fallbackFiles.length === 1) {
-            file2 = fallbackFiles[0];
-          } else if (fallbackFiles.length > 1) {
-            const candidates = fallbackFiles.map((f) => `${f.id} (parent ${(f.parents || []).join(",")})`).join("; ");
-            throw new Error(
-              `[aifs] Ambiguous path segment '${segment}' at drive root: ${fallbackFiles.length} folders named '${segment}' share the drive root as parent. Candidates: ${candidates}. Resolve with an id:{folderId} anchor to disambiguate.`
+          if (allFallback.length === 1) {
+            file2 = allFallback[0];
+          } else if (allFallback.length > 1) {
+            const parentMatched = allFallback.filter(
+              (f) => Array.isArray(f.parents) && f.parents.includes(currentId)
             );
+            if (parentMatched.length === 1) {
+              file2 = parentMatched[0];
+            } else {
+              const candidates = allFallback.map((f) => `${f.id} (parent ${(f.parents || []).join(",") || "n/a"})`).join("; ");
+              throw new Error(
+                `[aifs] Ambiguous path segment '${segment}': ${allFallback.length} accessible folders named '${segment}', ${parentMatched.length} under the expected parent. Candidates: ${candidates}. Resolve with an id:{folderId} anchor to disambiguate.`
+              );
+            }
           }
         }
       }
