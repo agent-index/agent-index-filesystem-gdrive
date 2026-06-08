@@ -6,6 +6,7 @@ import {
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
+import { Readable } from 'node:stream';
 import { dirname, join } from 'node:path';
 import { URL } from 'node:url';
 
@@ -636,10 +637,13 @@ export class GoogleDriveAdapter {
     const parentId = await this._ensureParentDirs(parentPath);
 
     // Determine body
+    // bin5 (2.5.1): the googleapis multipart writer cannot handle a raw Buffer
+    // (it calls part.body.pipe()). For binary content, wrap the decoded Buffer
+    // in a Readable stream, which the writer accepts. Strings pass through as-is.
     let body;
     let mimeType = 'text/plain';
     if (content.startsWith('base64:')) {
-      body = Buffer.from(content.slice(7), 'base64');
+      body = Readable.from(Buffer.from(content.slice(7), 'base64'));
       mimeType = 'application/octet-stream';
     } else {
       body = content;
@@ -1140,15 +1144,31 @@ export class GoogleDriveAdapter {
               pageSize: 10,
             })
           );
-          const fallbackFiles = fallbackRes.data.files || [];
-          if (fallbackFiles.length > 0) {
+          // db13 (2.5.1): parent-constrain the global name search. The
+          // unconstrained query matches same-named folders ANYWHERE the user
+          // has access (e.g. /shared/{name}, strays in the user's My Drive),
+          // so picking the first silently resolved the wrong folder
+          // (bug 20260606-62a14c43-230135-db13). Keep only candidates whose
+          // parent is the drive root we're resolving against. If still >1,
+          // FAIL LOUD with the candidate list rather than guessing — the
+          // caller should disambiguate with an id: anchor.
+          const allFallback = fallbackRes.data.files || [];
+          const fallbackFiles = allFallback.filter(
+            (f) => Array.isArray(f.parents) && f.parents.includes(currentId)
+          );
+          if (fallbackFiles.length === 1) {
             file = fallbackFiles[0];
-            if (fallbackFiles.length > 1) {
-              console.error(
-                `[aifs] Notice: ${fallbackFiles.length} files named '${segment}' at drive root are accessible; picked first (id=${file.id}).`
-              );
-            }
+          } else if (fallbackFiles.length > 1) {
+            const candidates = fallbackFiles
+              .map((f) => `${f.id} (parent ${(f.parents || []).join(',')})`)
+              .join('; ');
+            throw new Error(
+              `[aifs] Ambiguous path segment '${segment}' at drive root: ` +
+                `${fallbackFiles.length} folders named '${segment}' share the drive root as parent. ` +
+                `Candidates: ${candidates}. Resolve with an id:{folderId} anchor to disambiguate.`
+            );
           }
+          // length 0 after the parent filter → file stays unset → not found.
         }
       }
 

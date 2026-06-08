@@ -8702,7 +8702,7 @@ var require_lib2 = __commonJS({
     var whatwgUrl = _interopDefault(require_public_api());
     var https = _interopDefault(__require("https"));
     var zlib = _interopDefault(__require("zlib"));
-    var Readable = Stream.Readable;
+    var Readable2 = Stream.Readable;
     var BUFFER = Symbol("buffer");
     var TYPE = Symbol("type");
     var Blob = class _Blob {
@@ -8754,7 +8754,7 @@ var require_lib2 = __commonJS({
         return Promise.resolve(ab);
       }
       stream() {
-        const readable = new Readable();
+        const readable = new Readable2();
         readable._read = function() {
         };
         readable.push(this[BUFFER]);
@@ -41469,6 +41469,7 @@ import {
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { createServer as createServer2 } from "node:http";
+import { Readable } from "node:stream";
 import { dirname as dirname2, join } from "node:path";
 import { URL as URL3 } from "node:url";
 var LOCK_STALE_MS = 3e4;
@@ -41857,7 +41858,7 @@ var GoogleDriveAdapter = class {
     let body;
     let mimeType = "text/plain";
     if (content.startsWith("base64:")) {
-      body = Buffer.from(content.slice(7), "base64");
+      body = Readable.from(Buffer.from(content.slice(7), "base64"));
       mimeType = "application/octet-stream";
     } else {
       body = content;
@@ -42226,14 +42227,17 @@ var GoogleDriveAdapter = class {
               pageSize: 10
             })
           );
-          const fallbackFiles = fallbackRes.data.files || [];
-          if (fallbackFiles.length > 0) {
+          const allFallback = fallbackRes.data.files || [];
+          const fallbackFiles = allFallback.filter(
+            (f) => Array.isArray(f.parents) && f.parents.includes(currentId)
+          );
+          if (fallbackFiles.length === 1) {
             file2 = fallbackFiles[0];
-            if (fallbackFiles.length > 1) {
-              console.error(
-                `[aifs] Notice: ${fallbackFiles.length} files named '${segment}' at drive root are accessible; picked first (id=${file2.id}).`
-              );
-            }
+          } else if (fallbackFiles.length > 1) {
+            const candidates = fallbackFiles.map((f) => `${f.id} (parent ${(f.parents || []).join(",")})`).join("; ");
+            throw new Error(
+              `[aifs] Ambiguous path segment '${segment}' at drive root: ${fallbackFiles.length} folders named '${segment}' share the drive root as parent. Candidates: ${candidates}. Resolve with an id:{folderId} anchor to disambiguate.`
+            );
           }
         }
       }

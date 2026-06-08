@@ -1,5 +1,20 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.5.1] — 2026-06-08
+
+### Fixed
+
+- **bin5 — binary upload (HIGH).** `write()` with `base64:`-prefixed content now wraps the decoded Buffer in a `Readable` stream before handing it to the googleapis media writer. The writer calls `part.body.pipe()`, which threw `part.body.pipe is not a function` on a raw Buffer — so no PNG/JPG/binary file could be created or updated. Strings are unaffected. (Surfaced by brand-book manage-assets logo upload.)
+- **db13 — duplicate-name resolution (HIGH).** The non-Drive-member drive-root fallback in `_resolvePathToId()` previously ran an unconstrained global name search (`corpora: allDrives`, no parent filter) and silently picked the first match — resolving the WRONG same-named folder when more than one was accessible (e.g. `/shared/{name}`, or strays in the member's My Drive). It now: (1) constrains candidates to those whose parent IS the drive root being resolved; (2) on a single match, resolves it; (3) on multiple same-parent matches, FAILS LOUD with the candidate list instead of guessing; (4) `id:{folderId}` anchors continue to bypass name search entirely. (bug 20260606-62a14c43-230135-db13)
+
+### Deferred
+
+- **F4 (aifs_read trailing newline)** is NOT changed here. read() returns raw UTF-8 with no appended newline; the spurious trailing newline originates in the exec output layer, and altering the read output contract requires a dedicated caller-regression sweep. Deferred to its own focused effort to avoid destabilizing callers that already compensate.
+
+### Behavior change note
+
+- The db13 fail-loud path can surface an explicit "ambiguous path segment" error where the adapter previously returned a silently-wrong folder. This is intended — loud beats wrong — but admins should be aware the error is new.
+
 All notable changes will be documented here.
 
 Format: [MAJOR.MINOR.PATCH] — YYYY-MM-DD
