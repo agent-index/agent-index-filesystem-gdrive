@@ -1,5 +1,18 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.6.0] — 2026-06-09 — Platform Reliability
+
+Release record: core-improvements `releases/platform-reliability/`. Closes bugs `20260604-8d20ea22-143415-2837` (F4), `20260608-8d20ea22-233527-clicap`, `20260609-8d20ea22-flakyread`; tail-loss prevention for `20260608-8d20ea22-003039-trunc`.
+
+### Fixed
+- **F4 — byte-exact reads**: the exec layer emitted `aifs_read` string results via `console.log`, appending a trailing newline to every file read and poisoning hash/diff comparisons fleet-wide. String results now go through `process.stdout.write` unchanged; structured (JSON) output is unaffected.
+- **flakyread — no more silent empties**: `read()` never returns empty content for a file whose metadata reports non-zero size — it stat-gates, retries with backoff (500ms/1s/2s), and throws `AIFS_READ_UNRELIABLE` if the backend keeps returning empty. Transient NOT_FOUND on resolution gets one cache-busted re-resolution before `FILE_NOT_FOUND`. Genuinely empty / genuinely missing files behave exactly as before.
+
+### Added
+- **`content_file` / `content_stdin` on `aifs_write`** (closes clicap): payloads can be read from a local file path or stdin, bypassing the ~128KB single-CLI-arg cap. With `encoding: "base64"`, file/stdin payloads are treated as raw binary and encoded by the executor. The `content` arg path is unchanged.
+- **Sentinel-aware write verification** (standards.md § "File-integrity sentinel"): when written text content ends with an `AIFS:FILE-END` encoding, the adapter reads back post-write and confirms the marker survived; one rewrite attempt, then `AIFS_WRITE_VERIFY_FAILED`. Unstamped and binary content: zero overhead. Exported helpers `detectSentinel` / `AIFS_SENTINEL` for tooling reuse.
+- **Unit test suite** (`src/adapters/gdrive.test.js`, `node --test`, mocked Drive): 14 tests covering sentinel detection (all four encodings + negatives), flakyread retry semantics, and write-verification pass/heal/fail paths. Live binary round-trip and large-write tests are in the release test plan (S1).
+
 ## [2.5.1] — 2026-06-08
 
 ### Fixed

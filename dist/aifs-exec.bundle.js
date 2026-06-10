@@ -41578,6 +41578,25 @@ function _escape(s) {
     "'": "&#39;"
   })[c]);
 }
+var AIFS_SENTINEL = "AIFS:FILE-END";
+function detectSentinel(content) {
+  if (typeof content !== "string" || content.length === 0)
+    return null;
+  if (content.startsWith("base64:"))
+    return null;
+  const tail = content.slice(-400).replace(/\s+$/, "");
+  if (tail.endsWith(`<!-- ${AIFS_SENTINEL} -->`))
+    return "md";
+  if (tail.endsWith(`// ${AIFS_SENTINEL}`))
+    return "slash";
+  if (tail.endsWith(`# ${AIFS_SENTINEL}`))
+    return "hash";
+  if (/"_file_end"\s*:\s*"AIFS:FILE-END"\s*[}\]\s]*$/.test(tail))
+    return "json";
+  return null;
+}
+var aifsSleep = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
+var READ_RETRY_BACKOFF_MS = [500, 1e3, 2e3];
 var GoogleDriveAdapter = class {
   constructor() {
     this.connection = null;
@@ -41827,25 +41846,59 @@ var GoogleDriveAdapter = class {
   // ─── File Operations ─────────────────────────────────────────────────
   async read(path) {
     this._ensureAuth();
-    const fileId = await this._resolvePathToId(path);
+    let fileId = await this._resolvePathToId(path);
     if (!fileId) {
-      throw new FileNotFoundError(path);
+      this.pathCache.delete(this._normalizePath(path));
+      await aifsSleep(300);
+      fileId = await this._resolvePathToId(path);
+      if (!fileId) {
+        throw new FileNotFoundError(path);
+      }
     }
     try {
       const params = { fileId, alt: "media" };
       if (this.connection.drive_id) {
         params.supportsAllDrives = true;
       }
-      const res = await this._withAutoRefresh(
-        () => this.drive.files.get(params, { responseType: "arraybuffer" })
-      );
-      const buffer = Buffer.from(res.data);
+      const fetchBuffer = async () => {
+        const res = await this._withAutoRefresh(
+          () => this.drive.files.get(params, { responseType: "arraybuffer" })
+        );
+        return Buffer.from(res.data);
+      };
+      let buffer = await fetchBuffer();
+      if (buffer.length === 0) {
+        const metaParams = { fileId, fields: "size" };
+        if (this.connection.drive_id)
+          metaParams.supportsAllDrives = true;
+        const meta3 = await this._withAutoRefresh(
+          () => this.drive.files.get(metaParams)
+        );
+        const declaredSize = Number(meta3?.data?.size ?? 0);
+        if (declaredSize > 0) {
+          for (const delayMs of READ_RETRY_BACKOFF_MS) {
+            await aifsSleep(delayMs);
+            buffer = await fetchBuffer();
+            if (buffer.length > 0)
+              break;
+          }
+          if (buffer.length === 0) {
+            throw new AifsError(
+              "AIFS_READ_UNRELIABLE",
+              `read: backend returned empty content for "${path}" but metadata reports ${declaredSize} bytes (retried ${READ_RETRY_BACKOFF_MS.length}x). Transient backend failure \u2014 retry the operation; do NOT treat this file as empty or truncated.`,
+              { path, declared_size: declaredSize, retries: READ_RETRY_BACKOFF_MS.length }
+            );
+          }
+        }
+      }
       const text = buffer.toString("utf-8");
       if (text.includes("\0")) {
         return "base64:" + buffer.toString("base64");
       }
       return text;
     } catch (err) {
+      if (err instanceof AifsError)
+        throw err;
       this._handleDriveError(err, path);
     }
   }
@@ -41855,14 +41908,7 @@ var GoogleDriveAdapter = class {
     const parentPath = this._parentPath(normalized);
     const fileName = this._fileName(normalized);
     const parentId = await this._ensureParentDirs(parentPath);
-    let body;
-    let mimeType = "text/plain";
-    if (content.startsWith("base64:")) {
-      body = Readable.from(Buffer.from(content.slice(7), "base64"));
-      mimeType = "application/octet-stream";
-    } else {
-      body = content;
-    }
+    const mimeType = content.startsWith("base64:") ? "application/octet-stream" : "text/plain";
     const existingId = await this._resolvePathToId(path);
     if (options.ifRevision && existingId) {
       const params = { fileId: existingId, fields: "headRevisionId" };
@@ -41882,42 +41928,82 @@ var GoogleDriveAdapter = class {
         this._handleDriveError(err, path);
       }
     }
+    const sentinelKind = detectSentinel(content);
     try {
       const driveParams = {};
       if (this.connection.drive_id) {
         driveParams.supportsAllDrives = true;
       }
-      let res;
-      if (existingId) {
-        res = await this._withAutoRefresh(
-          () => this.drive.files.update({
-            fileId: existingId,
-            media: { mimeType, body },
-            fields: "id, mimeType, headRevisionId",
-            ...driveParams
-          })
-        );
-        this.pathCache.set(normalized, { id: res.data.id, mimeType: res.data.mimeType });
-      } else {
-        const fileMetadata = {
-          name: fileName,
-          parents: [parentId]
-        };
-        if (this.connection.drive_id) {
-          fileMetadata.driveId = this.connection.drive_id;
+      const makeBody = () => content.startsWith("base64:") ? Readable.from(Buffer.from(content.slice(7), "base64")) : content;
+      const doWrite = async () => {
+        let res2;
+        if (existingId) {
+          res2 = await this._withAutoRefresh(
+            () => this.drive.files.update({
+              fileId: existingId,
+              media: { mimeType, body: makeBody() },
+              fields: "id, mimeType, headRevisionId",
+              ...driveParams
+            })
+          );
+        } else if (this.pathCache.get(normalized)?.id) {
+          res2 = await this._withAutoRefresh(
+            () => this.drive.files.update({
+              fileId: this.pathCache.get(normalized).id,
+              media: { mimeType, body: makeBody() },
+              fields: "id, mimeType, headRevisionId",
+              ...driveParams
+            })
+          );
+        } else {
+          const fileMetadata = {
+            name: fileName,
+            parents: [parentId]
+          };
+          if (this.connection.drive_id) {
+            fileMetadata.driveId = this.connection.drive_id;
+          }
+          res2 = await this._withAutoRefresh(
+            () => this.drive.files.create({
+              requestBody: fileMetadata,
+              media: { mimeType, body: makeBody() },
+              fields: "id, mimeType, headRevisionId",
+              ...driveParams
+            })
+          );
         }
-        res = await this._withAutoRefresh(
-          () => this.drive.files.create({
-            requestBody: fileMetadata,
-            media: { mimeType, body },
-            fields: "id, mimeType, headRevisionId",
-            ...driveParams
-          })
-        );
-        this.pathCache.set(normalized, { id: res.data.id, mimeType: res.data.mimeType });
+        this.pathCache.set(normalized, { id: res2.data.id, mimeType: res2.data.mimeType });
+        return res2;
+      };
+      let res = await doWrite();
+      if (sentinelKind) {
+        const verifyOnce = async () => {
+          const vParams = { fileId: res.data.id, alt: "media" };
+          if (this.connection.drive_id)
+            vParams.supportsAllDrives = true;
+          const vRes = await this._withAutoRefresh(
+            () => this.drive.files.get(vParams, { responseType: "arraybuffer" })
+          );
+          const readBack = Buffer.from(vRes.data).toString("utf-8");
+          return detectSentinel(readBack) === sentinelKind;
+        };
+        let verified = await verifyOnce();
+        if (!verified) {
+          res = await doWrite();
+          verified = await verifyOnce();
+          if (!verified) {
+            throw new AifsError(
+              "AIFS_WRITE_VERIFY_FAILED",
+              `write: AIFS:FILE-END sentinel did not survive the upload of "${path}" (retried once). The remote copy is likely tail-truncated \u2014 do not trust it; re-write from the canonical source.`,
+              { path, sentinel_kind: sentinelKind }
+            );
+          }
+        }
       }
       return { revision: res?.data?.headRevisionId || null };
     } catch (err) {
+      if (err instanceof AifsError)
+        throw err;
       this._handleDriveError(err, path);
     }
   }
@@ -43289,8 +43375,22 @@ async function routeToolCall(adapter, toolName, args) {
       requireArgs(toolName, args, [["path", "path"]]);
       return adapter.read(args.path);
     case "aifs_write": {
-      requireArgs(toolName, args, [["path", "path"], "content"]);
+      requireArgs(toolName, args, [["path", "path"]]);
       let content = args.content;
+      if (content === void 0 || content === null) {
+        if (typeof args.content_file === "string" && args.content_file.length > 0) {
+          const payload = await readFile3(args.content_file);
+          content = args.encoding === "base64" ? payload.toString("base64") : payload.toString("utf-8");
+        } else if (args.content_stdin === true) {
+          const chunks = [];
+          for await (const chunk of process.stdin)
+            chunks.push(chunk);
+          const payload = Buffer.concat(chunks);
+          content = args.encoding === "base64" ? payload.toString("base64") : payload.toString("utf-8");
+        } else {
+          requireArgs(toolName, args, ["content"]);
+        }
+      }
       if (args.encoding === "base64" && !content.startsWith("base64:")) {
         content = "base64:" + content;
       }
@@ -43455,8 +43555,11 @@ async function main() {
   try {
     const result = await routeToolCall(adapter, toolName, toolArgs);
     const stripped = typeof result === "string" ? result : stripDebugFields(result);
-    const output = typeof stripped === "string" ? stripped : JSON.stringify(stripped, null, 2);
-    console.log(output);
+    if (typeof stripped === "string") {
+      process.stdout.write(stripped);
+    } else {
+      console.log(JSON.stringify(stripped, null, 2));
+    }
   } catch (err) {
     if (err instanceof AifsError) {
       console.log(JSON.stringify(stripDebugFields(err.toResponse()), null, 2));

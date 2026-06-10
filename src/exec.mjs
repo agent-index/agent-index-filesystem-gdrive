@@ -166,16 +166,40 @@ async function routeToolCall(adapter, toolName, args) {
       return adapter.read(args.path);
 
     case 'aifs_write': {
-      // content may legally be the empty string (truncate-to-zero write),
-      // so it's required-defined but allowed-empty. path must be a real path.
-      requireArgs(toolName, args, [['path', 'path'], 'content']);
+      // content may arrive three ways (2.6.0 — closes bug 20260608-…-clicap;
+      // the single-CLI-arg path caps payloads at ~128KB):
+      //   1. `content` (string arg) — the classic path, fine for small writes
+      //   2. `content_file` (local filesystem path) — the executor reads the
+      //      raw payload bytes from that file; no CLI-arg size limit
+      //   3. `content_stdin: true` — the executor reads the payload from stdin
+      // With `encoding: "base64"`, content_file/stdin payloads are treated as
+      // RAW BINARY and base64-encoded here; a `content` string is assumed to
+      // already be base64 text (unchanged from 2.5.x).
+      requireArgs(toolName, args, [['path', 'path']]);
+      let content = args.content;
+      if (content === undefined || content === null) {
+        if (typeof args.content_file === 'string' && args.content_file.length > 0) {
+          const payload = await readFile(args.content_file);
+          content = args.encoding === 'base64'
+            ? payload.toString('base64')
+            : payload.toString('utf-8');
+        } else if (args.content_stdin === true) {
+          const chunks = [];
+          for await (const chunk of process.stdin) chunks.push(chunk);
+          const payload = Buffer.concat(chunks);
+          content = args.encoding === 'base64'
+            ? payload.toString('base64')
+            : payload.toString('utf-8');
+        } else {
+          requireArgs(toolName, args, ['content']); // canonical missing-arg error
+        }
+      }
 
       // Honour the optional `encoding` field. When encoding is "base64",
       // prepend the "base64:" sentinel that the adapter's write() method
       // looks for so the payload is decoded to binary bytes before upload.
       // Without this, base64 text gets stored as-is and the resulting
       // Drive file is an ASCII blob instead of the intended binary.
-      let content = args.content;
       if (args.encoding === 'base64' && !content.startsWith('base64:')) {
         content = 'base64:' + content;
       }
@@ -379,8 +403,15 @@ async function main() {
   try {
     const result = await routeToolCall(adapter, toolName, toolArgs);
     const stripped = typeof result === 'string' ? result : stripDebugFields(result);
-    const output = typeof stripped === 'string' ? stripped : JSON.stringify(stripped, null, 2);
-    console.log(output);
+    if (typeof stripped === 'string') {
+      // F4 (2.6.0, bug 20260604-…-2837): file content is emitted byte-exact.
+      // console.log appended a trailing newline to every aifs_read result,
+      // poisoning hash/diff comparisons fleet-wide. JSON results below keep
+      // console.log — a trailing newline on structured output is harmless.
+      process.stdout.write(stripped);
+    } else {
+      console.log(JSON.stringify(stripped, null, 2));
+    }
   } catch (err) {
     if (err instanceof AifsError) {
       console.log(JSON.stringify(stripDebugFields(err.toResponse()), null, 2));

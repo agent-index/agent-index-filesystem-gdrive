@@ -226,6 +226,38 @@ function _escape(s) {
  *   "root_folder_id": "..."          // Root folder ID (optional — defaults to drive root)
  * }
  */
+// ─── Platform Reliability helpers (2.6.0) ─────────────────────────────
+//
+// File-integrity sentinel (standards.md § "File-integrity sentinel"):
+// detect whether written text content carries an AIFS:FILE-END marker so
+// the write path can verify the marker survived the upload (tail-loss
+// detection at write time — FCI-1 / clicap classes).
+
+export const AIFS_SENTINEL = 'AIFS:FILE-END';
+
+/**
+ * Returns the sentinel encoding kind ('md' | 'hash' | 'slash' | 'json')
+ * if the content's last non-whitespace text is a recognized AIFS:FILE-END
+ * encoding, else null. Binary ("base64:") content is never sentinel-checked.
+ */
+export function detectSentinel(content) {
+  if (typeof content !== 'string' || content.length === 0) return null;
+  if (content.startsWith('base64:')) return null;
+  const tail = content.slice(-400).replace(/\s+$/, '');
+  if (tail.endsWith(`<!-- ${AIFS_SENTINEL} -->`)) return 'md';
+  if (tail.endsWith(`// ${AIFS_SENTINEL}`)) return 'slash';
+  if (tail.endsWith(`# ${AIFS_SENTINEL}`)) return 'hash';
+  // JSON: reserved final key — allow closing braces/brackets after it.
+  if (/"_file_end"\s*:\s*"AIFS:FILE-END"\s*[}\]\s]*$/.test(tail)) return 'json';
+  return null;
+}
+
+/** Sleep helper for retry backoff. */
+export const aifsSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Backoff schedule (ms) for unreliable-read retries (flakyread). */
+export const READ_RETRY_BACKOFF_MS = [500, 1000, 2000];
+
 export class GoogleDriveAdapter {
   constructor() {
     this.connection = null;
@@ -598,10 +630,20 @@ export class GoogleDriveAdapter {
 
   async read(path) {
     this._ensureAuth();
-    const fileId = await this._resolvePathToId(path);
+    let fileId = await this._resolvePathToId(path);
 
     if (!fileId) {
-      throw new FileNotFoundError(path);
+      // flakyread (2.6.0, bug 20260609-8d20ea22-flakyread): the backend
+      // intermittently returns NOT_FOUND for files that exist. Before
+      // concluding the file is missing, drop any stale cache entry and
+      // re-resolve once after a short delay. A genuinely missing file
+      // costs one extra resolution; a transient miss is healed.
+      this.pathCache.delete(this._normalizePath(path));
+      await aifsSleep(300);
+      fileId = await this._resolvePathToId(path);
+      if (!fileId) {
+        throw new FileNotFoundError(path);
+      }
     }
 
     try {
@@ -611,10 +653,41 @@ export class GoogleDriveAdapter {
         params.supportsAllDrives = true;
       }
 
-      const res = await this._withAutoRefresh(() =>
-        this.drive.files.get(params, { responseType: 'arraybuffer' })
-      );
-      const buffer = Buffer.from(res.data);
+      const fetchBuffer = async () => {
+        const res = await this._withAutoRefresh(() =>
+          this.drive.files.get(params, { responseType: 'arraybuffer' })
+        );
+        return Buffer.from(res.data);
+      };
+
+      let buffer = await fetchBuffer();
+
+      // flakyread (2.6.0): never return empty content for a file the
+      // backend says is non-empty. Empty result -> stat-gate (metadata
+      // size) -> bounded retries with backoff -> explicit error. A file
+      // that is GENUINELY empty (size 0) returns immediately as before.
+      if (buffer.length === 0) {
+        const metaParams = { fileId, fields: 'size' };
+        if (this.connection.drive_id) metaParams.supportsAllDrives = true;
+        const meta = await this._withAutoRefresh(() =>
+          this.drive.files.get(metaParams)
+        );
+        const declaredSize = Number(meta?.data?.size ?? 0);
+        if (declaredSize > 0) {
+          for (const delayMs of READ_RETRY_BACKOFF_MS) {
+            await aifsSleep(delayMs);
+            buffer = await fetchBuffer();
+            if (buffer.length > 0) break;
+          }
+          if (buffer.length === 0) {
+            throw new AifsError(
+              'AIFS_READ_UNRELIABLE',
+              `read: backend returned empty content for "${path}" but metadata reports ${declaredSize} bytes (retried ${READ_RETRY_BACKOFF_MS.length}x). Transient backend failure — retry the operation; do NOT treat this file as empty or truncated.`,
+              { path, declared_size: declaredSize, retries: READ_RETRY_BACKOFF_MS.length }
+            );
+          }
+        }
+      }
 
       // Try UTF-8; fall back to base64 for binary
       const text = buffer.toString('utf-8');
@@ -623,6 +696,7 @@ export class GoogleDriveAdapter {
       }
       return text;
     } catch (err) {
+      if (err instanceof AifsError) throw err;
       this._handleDriveError(err, path);
     }
   }
@@ -636,18 +710,15 @@ export class GoogleDriveAdapter {
     // Ensure parent directory exists (create recursively if needed)
     const parentId = await this._ensureParentDirs(parentPath);
 
-    // Determine body
-    // bin5 (2.5.1): the googleapis multipart writer cannot handle a raw Buffer
-    // (it calls part.body.pipe()). For binary content, wrap the decoded Buffer
-    // in a Readable stream, which the writer accepts. Strings pass through as-is.
-    let body;
-    let mimeType = 'text/plain';
-    if (content.startsWith('base64:')) {
-      body = Readable.from(Buffer.from(content.slice(7), 'base64'));
-      mimeType = 'application/octet-stream';
-    } else {
-      body = content;
-    }
+    // Determine MIME type. The request body itself is built per write
+    // attempt by makeBody() below (2.6.0) — binary streams are one-shot,
+    // so the sentinel-verification retry path must rebuild them.
+    // bin5 (2.5.1): the googleapis multipart writer cannot handle a raw
+    // Buffer (it calls part.body.pipe()); binary content is wrapped in a
+    // Readable stream. Strings pass through as-is.
+    const mimeType = content.startsWith('base64:')
+      ? 'application/octet-stream'
+      : 'text/plain';
 
     // Check if the file already exists (overwrite)
     const existingId = await this._resolvePathToId(path);
@@ -674,45 +745,97 @@ export class GoogleDriveAdapter {
       }
     }
 
+    // Sentinel-aware write verification (2.6.0, standards.md § "File-
+    // integrity sentinel"): if the text content carries an AIFS:FILE-END
+    // marker, verify post-write that the marker survived the upload.
+    // Catches tail loss at write time (FCI-1 mount truncation, capped
+    // payloads) instead of corrupting the remote silently.
+    const sentinelKind = detectSentinel(content);
+
     try {
       const driveParams = {};
       if (this.connection.drive_id) {
         driveParams.supportsAllDrives = true;
       }
 
-      let res;
-      if (existingId) {
-        // Update existing file
-        res = await this._withAutoRefresh(() =>
-          this.drive.files.update({
-            fileId: existingId,
-            media: { mimeType, body },
-            fields: 'id, mimeType, headRevisionId',
-            ...driveParams,
-          })
-        );
+      // body may be a one-shot stream (binary path); rebuild it per attempt.
+      const makeBody = () =>
+        content.startsWith('base64:')
+          ? Readable.from(Buffer.from(content.slice(7), 'base64'))
+          : content;
 
-        this.pathCache.set(normalized, { id: res.data.id, mimeType: res.data.mimeType });
-      } else {
-        // Create new file
-        const fileMetadata = {
-          name: fileName,
-          parents: [parentId],
-        };
-        if (this.connection.drive_id) {
-          fileMetadata.driveId = this.connection.drive_id;
+      const doWrite = async () => {
+        let res;
+        if (existingId) {
+          // Update existing file
+          res = await this._withAutoRefresh(() =>
+            this.drive.files.update({
+              fileId: existingId,
+              media: { mimeType, body: makeBody() },
+              fields: 'id, mimeType, headRevisionId',
+              ...driveParams,
+            })
+          );
+        } else if (this.pathCache.get(normalized)?.id) {
+          // A prior attempt in this invocation created the file — update it.
+          res = await this._withAutoRefresh(() =>
+            this.drive.files.update({
+              fileId: this.pathCache.get(normalized).id,
+              media: { mimeType, body: makeBody() },
+              fields: 'id, mimeType, headRevisionId',
+              ...driveParams,
+            })
+          );
+        } else {
+          // Create new file
+          const fileMetadata = {
+            name: fileName,
+            parents: [parentId],
+          };
+          if (this.connection.drive_id) {
+            fileMetadata.driveId = this.connection.drive_id;
+          }
+
+          res = await this._withAutoRefresh(() =>
+            this.drive.files.create({
+              requestBody: fileMetadata,
+              media: { mimeType, body: makeBody() },
+              fields: 'id, mimeType, headRevisionId',
+              ...driveParams,
+            })
+          );
         }
-
-        res = await this._withAutoRefresh(() =>
-          this.drive.files.create({
-            requestBody: fileMetadata,
-            media: { mimeType, body },
-            fields: 'id, mimeType, headRevisionId',
-            ...driveParams,
-          })
-        );
-
         this.pathCache.set(normalized, { id: res.data.id, mimeType: res.data.mimeType });
+        return res;
+      };
+
+      let res = await doWrite();
+
+      if (sentinelKind) {
+        const verifyOnce = async () => {
+          const vParams = { fileId: res.data.id, alt: 'media' };
+          if (this.connection.drive_id) vParams.supportsAllDrives = true;
+          const vRes = await this._withAutoRefresh(() =>
+            this.drive.files.get(vParams, { responseType: 'arraybuffer' })
+          );
+          const readBack = Buffer.from(vRes.data).toString('utf-8');
+          return detectSentinel(readBack) === sentinelKind;
+        };
+
+        let verified = await verifyOnce();
+        if (!verified) {
+          // One rewrite attempt, then fail loudly — never leave a
+          // silently-truncated remote copy behind an OK result.
+          res = await doWrite();
+          verified = await verifyOnce();
+          if (!verified) {
+            throw new AifsError(
+              'AIFS_WRITE_VERIFY_FAILED',
+              `write: AIFS:FILE-END sentinel did not survive the upload of "${path}" (retried once). The remote copy is likely tail-truncated — do not trust it; re-write from the canonical source.`,
+              { path, sentinel_kind: sentinelKind }
+            );
+          }
+        }
       }
 
       // Return the new revision so callers in a read-modify-write cycle
@@ -721,6 +844,7 @@ export class GoogleDriveAdapter {
       // edge cases — those return null.
       return { revision: res?.data?.headRevisionId || null };
     } catch (err) {
+      if (err instanceof AifsError) throw err;
       this._handleDriveError(err, path);
     }
   }
