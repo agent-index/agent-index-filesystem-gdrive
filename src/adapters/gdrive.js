@@ -986,7 +986,7 @@ export class GoogleDriveAdapter {
     try {
       const params = {
         fileId,
-        fields: 'size, modifiedTime, createdTime, headRevisionId',
+        fields: 'size, modifiedTime, createdTime, headRevisionId, webViewLink',
       };
       if (this.connection.drive_id) {
         params.supportsAllDrives = true;
@@ -1002,6 +1002,10 @@ export class GoogleDriveAdapter {
         modified: res.data.modifiedTime,
         created: res.data.createdTime,
         revision: res.data.headRevisionId || null,
+        // Browser-openable URL (Drive webViewLink) — parity with the onedrive adapter so
+        // invite-member can build a clickable bootstrap link in the welcome email
+        // (C.1.3.3 bootstraplinkunavailable). gdrive ids are global, so no drive_id is needed.
+        web_url: res.data.webViewLink || null,
       };
     } catch (err) {
       this._handleDriveError(err, path);
