@@ -60369,7 +60369,7 @@ var GoogleDriveAdapter = class {
             () => this.drive.files.update({
               fileId: existingId,
               media: { mimeType, body: makeBody() },
-              fields: "id, mimeType, headRevisionId",
+              fields: "id, mimeType, headRevisionId, size",
               ...driveParams
             })
           );
@@ -60378,7 +60378,7 @@ var GoogleDriveAdapter = class {
             () => this.drive.files.update({
               fileId: this.pathCache.get(normalized).id,
               media: { mimeType, body: makeBody() },
-              fields: "id, mimeType, headRevisionId",
+              fields: "id, mimeType, headRevisionId, size",
               ...driveParams
             })
           );
@@ -60394,7 +60394,7 @@ var GoogleDriveAdapter = class {
             () => this.drive.files.create({
               requestBody: fileMetadata,
               media: { mimeType, body: makeBody() },
-              fields: "id, mimeType, headRevisionId",
+              fields: "id, mimeType, headRevisionId, size",
               ...driveParams
             })
           );
@@ -60403,6 +60403,42 @@ var GoogleDriveAdapter = class {
         return res2;
       };
       let res = await doWrite();
+      const expectedBytes = content.startsWith("base64:") ? Buffer.from(content.slice(7), "base64").length : Buffer.byteLength(content, "utf-8");
+      const respSize = res?.data?.size != null ? parseInt(res.data.size, 10) : null;
+      if (respSize !== null && respSize !== expectedBytes) {
+        throw new AifsError(
+          "AIFS_WRITE_VERIFY_FAILED",
+          `write: sent ${expectedBytes} bytes to "${path}" but the backend stored ${respSize} \u2014 the upload was truncated or partial; do not trust the remote copy, re-write from source.`,
+          { path, expected_bytes: expectedBytes, actual_bytes: respSize }
+        );
+      }
+      const committedSize = async () => {
+        for (let i = 0; ; i++) {
+          try {
+            const params = { fileId: res.data.id, fields: "size" };
+            if (this.connection.drive_id)
+              params.supportsAllDrives = true;
+            const m = await this._withAutoRefresh(() => this.drive.files.get(params));
+            return m?.data && m.data.size != null ? parseInt(m.data.size, 10) : null;
+          } catch (e) {
+            if (i >= READ_RETRY_BACKOFF_MS.length)
+              return null;
+            await aifsSleep(READ_RETRY_BACKOFF_MS[i]);
+          }
+        }
+      };
+      let durableSize = await committedSize();
+      if (durableSize !== null && durableSize !== expectedBytes) {
+        res = await doWrite();
+        durableSize = await committedSize();
+        if (durableSize !== null && durableSize !== expectedBytes) {
+          throw new AifsError(
+            "AIFS_WRITE_VERIFY_FAILED",
+            `write: sent ${expectedBytes} bytes to "${path}" but the backend's committed copy is ${durableSize} bytes (re-read from a fresh metadata GET after one retry) \u2014 the upload was truncated or partial; do not trust the remote copy, re-write from source.`,
+            { path, expected_bytes: expectedBytes, actual_bytes: durableSize, verify: "durable-readback" }
+          );
+        }
+      }
       if (sentinelKind) {
         const verifyOnce = async () => {
           const vParams = { fileId: res.data.id, alt: "media" };

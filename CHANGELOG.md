@@ -1,5 +1,24 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.8.0] — 2026-07-01 — Release C.1.3.5 — M2 write-integrity parity
+
+Companion to core 3.22.5. Ports the C.1.3.4 OneDrive M2 durable read-back to gdrive so cross-backend write-integrity is verified, not inferred. Reference: `/shared/reference/ms365-adapter/59-gdrive-arm-M2-and-mitmcadefer-design.md`.
+
+### Added
+- **M2 — durable committed-size read-back in `write()` (HIGH).** After a write, the adapter now (a) checks the create/update **response** `size` against the bytes sent, and (b) independently re-reads the **committed** size via a fresh `fields=size` metadata GET and compares again. Catches torn/partial commits of **non-sentinel** content — JSON config, binaries — that the sentinel re-read never covered (the sentinel path only fires for text ending in `AIFS:FILE-END`; ms_install_10's `collection.json` shipped at 31030/32402 bytes and would slip past a response-only check). Expected byte count is computed correctly for both text (`Buffer.byteLength(…, 'utf-8')`) and `base64:` binary (decoded length). Best-effort reads (transient errors ride the 500ms/1s/2s backoff; an unreadable size returns null = "cannot confirm", never a false failure); on a confirmed mismatch it rewrites once, then throws `AIFS_WRITE_VERIFY_FAILED` with `{ path, expected_bytes, actual_bytes, verify: 'durable-readback' }` — the same contract shape as onedrive 2.4.0. `size` was added to the `fields` of all three `doWrite()` branches to enable the response-size check.
+
+### Notes
+- `contract_version` unchanged at `2.0.0` — internal write-verification logic only, no contract change.
+- Bundle SHA-256 and `bundle_built_at` are recomputed at native build time (host-side); `exec_bundle_checksum` in `adapter.json` is updated by the build.
+
+## [2.7.0] — 2026-06-29 — Release C.1.3.3 — bootstraplinkunavailable parity
+
+Backfilled retroactively (2.7.0 shipped without a changelog entry).
+
+### Added
+- **`web_url` in `stat`** (via Drive `webViewLink`) so invite-member can put a real clickable bootstrap-download link in the welcome email, matching the onedrive adapter (K3 welcome-email-link parity). Additive field; no scope change.
+- **`.gitattributes`** — autocrlf protection for the repo (C.1.3.2 line-ending guard, ported to gdrive).
+
 ## [2.6.0] — 2026-06-09 — Platform Reliability
 
 Release record: core-improvements `releases/platform-reliability/`. Closes bugs `20260604-8d20ea22-143415-2837` (F4), `20260608-8d20ea22-233527-clicap`, `20260609-8d20ea22-flakyread`; tail-loss prevention for `20260608-8d20ea22-003039-trunc`.

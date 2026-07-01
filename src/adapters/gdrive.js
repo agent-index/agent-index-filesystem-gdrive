@@ -772,7 +772,7 @@ export class GoogleDriveAdapter {
             this.drive.files.update({
               fileId: existingId,
               media: { mimeType, body: makeBody() },
-              fields: 'id, mimeType, headRevisionId',
+              fields: 'id, mimeType, headRevisionId, size',
               ...driveParams,
             })
           );
@@ -782,7 +782,7 @@ export class GoogleDriveAdapter {
             this.drive.files.update({
               fileId: this.pathCache.get(normalized).id,
               media: { mimeType, body: makeBody() },
-              fields: 'id, mimeType, headRevisionId',
+              fields: 'id, mimeType, headRevisionId, size',
               ...driveParams,
             })
           );
@@ -800,7 +800,7 @@ export class GoogleDriveAdapter {
             this.drive.files.create({
               requestBody: fileMetadata,
               media: { mimeType, body: makeBody() },
-              fields: 'id, mimeType, headRevisionId',
+              fields: 'id, mimeType, headRevisionId, size',
               ...driveParams,
             })
           );
@@ -810,6 +810,68 @@ export class GoogleDriveAdapter {
       };
 
       let res = await doWrite();
+
+      // ── Write-integrity verification (M2, collectionjson-tornwrite) ──
+      // Parity with onedrive 2.4.0. The sentinel re-read below only covers
+      // text ending in an AIFS:FILE-END marker; non-sentinel content (JSON
+      // config, binaries) needs an independent size check. expectedBytes is
+      // the true committed byte count of what we sent (decoded for base64).
+      const expectedBytes = content.startsWith('base64:')
+        ? Buffer.from(content.slice(7), 'base64').length
+        : Buffer.byteLength(content, 'utf-8');
+
+      // (a) Response-size check: the create/update response carries the stored
+      // byte count (Drive returns `size` as a STRING). Cheap — catches
+      // truncated/partial uploads for ALL content. An absent size is not a
+      // failure (some responses omit it); the durable read-back below covers
+      // that case.
+      const respSize = res?.data?.size != null ? parseInt(res.data.size, 10) : null;
+      if (respSize !== null && respSize !== expectedBytes) {
+        throw new AifsError(
+          'AIFS_WRITE_VERIFY_FAILED',
+          `write: sent ${expectedBytes} bytes to "${path}" but the backend stored ${respSize} — ` +
+          `the upload was truncated or partial; do not trust the remote copy, re-write from source.`,
+          { path, expected_bytes: expectedBytes, actual_bytes: respSize }
+        );
+      }
+
+      // (b) Durable committed-size read-back (M2, HIGH). The response size is
+      // write-time metadata; independently re-read the COMMITTED size from a
+      // fresh metadata GET and compare to what we sent. This catches torn /
+      // partial commits that reported a full size at write time (ms_install_10's
+      // core collection.json shipped at 31030/32402 bytes and slipped past a
+      // response-only check because it carried no sentinel). Cheap — a
+      // `fields: size` metadata GET, no content download. Best-effort: transient
+      // errors ride the backoff; a size we genuinely cannot read returns null =
+      // "cannot confirm", never a false failure. On a confirmed mismatch,
+      // re-write once (the observed torn-write was transient) then fail loud.
+      const committedSize = async () => {
+        for (let i = 0; ; i++) {
+          try {
+            const params = { fileId: res.data.id, fields: 'size' };
+            if (this.connection.drive_id) params.supportsAllDrives = true;
+            const m = await this._withAutoRefresh(() => this.drive.files.get(params));
+            return (m?.data && m.data.size != null) ? parseInt(m.data.size, 10) : null;
+          } catch (e) {
+            if (i >= READ_RETRY_BACKOFF_MS.length) return null;
+            await aifsSleep(READ_RETRY_BACKOFF_MS[i]);
+          }
+        }
+      };
+      let durableSize = await committedSize();
+      if (durableSize !== null && durableSize !== expectedBytes) {
+        res = await doWrite();
+        durableSize = await committedSize();
+        if (durableSize !== null && durableSize !== expectedBytes) {
+          throw new AifsError(
+            'AIFS_WRITE_VERIFY_FAILED',
+            `write: sent ${expectedBytes} bytes to "${path}" but the backend's committed copy is ${durableSize} bytes ` +
+            `(re-read from a fresh metadata GET after one retry) — the upload was truncated or partial; ` +
+            `do not trust the remote copy, re-write from source.`,
+            { path, expected_bytes: expectedBytes, actual_bytes: durableSize, verify: 'durable-readback' }
+          );
+        }
+      }
 
       if (sentinelKind) {
         const verifyOnce = async () => {

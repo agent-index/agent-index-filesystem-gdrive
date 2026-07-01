@@ -133,34 +133,53 @@ test('read: genuinely missing file still throws NOT_FOUND (after one re-resolve)
   assert.equal(resolveCalls, 2);
 });
 
-// ─── write: sentinel verification ─────────────────────────────────────
+// ─── write: sentinel verification + M2 durable read-back ──────────────
+//
+// M2 (2.8.0) adds an unconditional committed-size read-back BEFORE the
+// sentinel re-read, so every write now issues at least one `fields=size`
+// metadata GET (returned by meta() from the getImpls queue). Sentinel tests
+// front-load a matching meta() so the M2 gate passes cleanly and the sentinel
+// path is exercised in isolation.
 
 const STAMPED = `# Doc\n\nbody\n\n<!-- ${AIFS_SENTINEL} -->\n`;
+const STAMPED_BYTES = Buffer.byteLength(STAMPED, 'utf-8');
+const JSON_DOC = JSON.stringify({ a: 1, b: 'two', c: [3, 4, 5], note: 'no sentinel here' });
+const JSON_BYTES = Buffer.byteLength(JSON_DOC, 'utf-8');
 
-test('write: stamped content, sentinel survives -> one write, one verify', async () => {
-  const { adapter, calls } = mockAdapter({ getImpls: [() => media(STAMPED)] });
+test('write: stamped content, sentinel survives -> M2 pass + one sentinel verify', async () => {
+  const { adapter, calls } = mockAdapter({
+    getImpls: [
+      () => meta(STAMPED_BYTES), // M2 committedSize: matches
+      () => media(STAMPED),      // sentinel verify: intact
+    ],
+  });
   const res = await adapter.write('/doc.md', STAMPED);
   assert.equal(res.revision, 'rev-1');
   assert.equal(calls.update, 1); // existingId path (resolve returns file-1)
-  assert.equal(calls.get, 1);    // one verification read-back
+  assert.equal(calls.get, 2);    // committedSize + sentinel verify
 });
 
 test('write: sentinel lost once -> rewrite heals', async () => {
   const { adapter, calls } = mockAdapter({
     getImpls: [
-      () => media(STAMPED.slice(0, 12)), // verify #1: tail-truncated read-back
-      () => media(STAMPED),              // verify #2 (after rewrite): intact
+      () => meta(STAMPED_BYTES),         // M2 committedSize: matches
+      () => media(STAMPED.slice(0, 12)), // sentinel verify #1: tail-truncated read-back
+      () => media(STAMPED),              // sentinel verify #2 (after rewrite): intact
     ],
   });
   const res = await adapter.write('/doc.md', STAMPED);
   assert.equal(res.revision, 'rev-1');
   assert.equal(calls.update, 2); // original + healing rewrite
-  assert.equal(calls.get, 2);
+  assert.equal(calls.get, 3);    // committedSize + two sentinel verifies
 });
 
 test('write: sentinel never survives -> AIFS_WRITE_VERIFY_FAILED', async () => {
   const { adapter, calls } = mockAdapter({
-    getImpls: [() => media('truncated garbag')], // every verify fails
+    getImpls: [
+      () => meta(STAMPED_BYTES),       // M2 committedSize: matches (isolate the sentinel path)
+      () => media('truncated garbag'), // sentinel verify #1: fails
+      () => media('truncated garbag'), // sentinel verify #2: fails
+    ],
   });
   await assert.rejects(
     () => adapter.write('/doc.md', STAMPED),
@@ -169,18 +188,82 @@ test('write: sentinel never survives -> AIFS_WRITE_VERIFY_FAILED', async () => {
   assert.equal(calls.update, 2); // exactly one retry, then loud failure
 });
 
-test('write: unstamped content -> zero verification overhead', async () => {
-  const { adapter, calls } = mockAdapter({ getImpls: [] });
-  const res = await adapter.write('/notes.txt', 'no marker here\n');
+test('write: unstamped content -> M2 size read-back, no sentinel verify', async () => {
+  const body = 'no marker here\n';
+  const { adapter, calls } = mockAdapter({ getImpls: [() => meta(Buffer.byteLength(body, 'utf-8'))] });
+  const res = await adapter.write('/notes.txt', body);
   assert.equal(res.revision, 'rev-1');
-  assert.equal(calls.get, 0); // no read-back at all
+  assert.equal(calls.get, 1); // committedSize only; unstamped => no sentinel re-read
 });
 
-test('write: binary (base64:) content is never sentinel-verified', async () => {
-  const { adapter, calls } = mockAdapter({ getImpls: [] });
-  const res = await adapter.write('/logo.png', 'base64:' + Buffer.from('png-bytes').toString('base64'));
+test('write: binary (base64:) -> M2 verifies decoded byte length, no sentinel verify', async () => {
+  const raw = 'png-bytes';
+  const { adapter, calls } = mockAdapter({ getImpls: [() => meta(raw.length)] });
+  const res = await adapter.write('/logo.png', 'base64:' + Buffer.from(raw).toString('base64'));
   assert.equal(res.revision, 'rev-1');
-  assert.equal(calls.get, 0);
+  assert.equal(calls.get, 1); // committedSize on decoded length; binary is never sentinel-verified
+});
+
+// ─── write: M2 durable read-back on non-sentinel content ──────────────
+
+test('write: M2 durable read-back matches -> success (non-sentinel JSON)', async () => {
+  const { adapter, calls } = mockAdapter({ getImpls: [() => meta(JSON_BYTES)] });
+  const res = await adapter.write('/collection.json', JSON_DOC);
+  assert.equal(res.revision, 'rev-1');
+  assert.equal(calls.update, 1);
+  assert.equal(calls.get, 1); // committedSize; no sentinel on plain JSON
+});
+
+test('write: M2 committed size mismatches once -> rewrite heals', async () => {
+  const { adapter, calls } = mockAdapter({
+    getImpls: [
+      () => meta(JSON_BYTES - 5), // committedSize #1: torn (short)
+      () => meta(JSON_BYTES),     // committedSize #2 (after rewrite): correct
+    ],
+  });
+  const res = await adapter.write('/collection.json', JSON_DOC);
+  assert.equal(res.revision, 'rev-1');
+  assert.equal(calls.update, 2); // original + healing rewrite
+  assert.equal(calls.get, 2);
+});
+
+test('write: M2 committed size persistently wrong -> AIFS_WRITE_VERIFY_FAILED', async () => {
+  const { adapter, calls } = mockAdapter({
+    getImpls: [
+      () => meta(JSON_BYTES - 5),
+      () => meta(JSON_BYTES - 5),
+    ],
+  });
+  await assert.rejects(
+    () => adapter.write('/collection.json', JSON_DOC),
+    (err) => err.code === 'AIFS_WRITE_VERIFY_FAILED'
+      && err.details?.verify === 'durable-readback'
+      && err.details?.expected_bytes === JSON_BYTES
+      && err.details?.actual_bytes === JSON_BYTES - 5
+  );
+  assert.equal(calls.update, 2); // one rewrite, then loud failure
+});
+
+test('write: M2 best-effort -> unreadable committed size never fails the write', async () => {
+  // Metadata GET returns no size field => committedSize() returns null =
+  // "cannot confirm", so the write succeeds rather than failing falsely.
+  const { adapter, calls } = mockAdapter({ getImpls: [() => ({ data: {} })] });
+  const res = await adapter.write('/collection.json', JSON_DOC);
+  assert.equal(res.revision, 'rev-1');
+  assert.equal(calls.update, 1); // no rewrite
+});
+
+test('write: M2 response-size mismatch -> AIFS_WRITE_VERIFY_FAILED before read-back', async () => {
+  // The update RESPONSE reports a wrong stored size => fail immediately,
+  // before the durable read-back is even attempted.
+  const { adapter, calls } = mockAdapter({
+    updateImpl: () => ({ data: { id: 'file-1', mimeType: 'text/plain', headRevisionId: 'rev-1', size: String(JSON_BYTES - 3) } }),
+  });
+  await assert.rejects(
+    () => adapter.write('/collection.json', JSON_DOC),
+    (err) => err.code === 'AIFS_WRITE_VERIFY_FAILED' && err.details?.actual_bytes === JSON_BYTES - 3
+  );
+  assert.equal(calls.get, 0); // threw before any read-back
 });
 
 // AIFS:FILE-END (in a JS comment, the test file practices the standard:)
