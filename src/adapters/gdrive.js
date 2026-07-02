@@ -435,7 +435,9 @@ export class GoogleDriveAdapter {
           'Open this URL in your browser and sign in with your Google account. ' +
           'After granting access, the page will try to redirect to localhost — that redirect will fail, ' +
           'which is expected. Copy the full URL from your browser\'s address bar (it starts with ' +
-          '"http://localhost:3939/callback?code=...") and paste it back here.',
+          '"http://localhost:3939/callback?code=...") and paste it back here. Then finish by calling ' +
+          'aifs_authenticate again with action:"complete" and auth_code set to that pasted URL (or the ' +
+          'bare code value) — do NOT call action:"start" again.',
       };
     }
 
@@ -454,8 +456,9 @@ export class GoogleDriveAdapter {
         auth_url: authUrl,
         message:
           'Open this URL in your browser and sign in with your Google account. ' +
-          'After granting access, the browser will complete the handshake automatically. ' +
-          'If the redirect fails, paste the full URL from your browser\'s address bar back here.',
+          'After granting access, the browser will complete the handshake automatically; then call ' +
+          'aifs_authenticate with action:"complete" to finalize. If the redirect fails, paste the full ' +
+          'URL from your browser\'s address bar back here and call action:"complete" with auth_code set to it.',
       };
     }
 
@@ -466,7 +469,9 @@ export class GoogleDriveAdapter {
       message:
         'Open this URL in your browser and sign in with your Google account. ' +
         'After granting access, copy the full URL from your browser\'s address bar ' +
-        '(it starts with "http://localhost:3939/callback?code=...") and paste it back here.',
+        '(it starts with "http://localhost:3939/callback?code=...") and paste it back here. Then finish ' +
+        'by calling aifs_authenticate again with action:"complete" and auth_code set to that pasted URL ' +
+        '(or the bare code value) — do NOT call action:"start" again.',
     };
   }
 

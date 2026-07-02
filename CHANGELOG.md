@@ -1,5 +1,17 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.8.1] — 2026-07-02 — Release C.1.3.6 — member-auth parity (onedrive port)
+
+Closes the gdrive half of member-onboarding bug `20260701-8d20ea22-memberauthbootstrap`. onedrive has had both of these since the `pkcerestart` fix; this ports them to gdrive.
+
+### Fixed
+- **`aifs_authenticate` infers `complete` from `auth_code` (`exec.mjs`).** The dispatch was `action = args.action || 'start'`, so a caller that passed the pasted code but omitted `action:"complete"` silently re-ran `start` and ignored the code — a driver without the exact contract in context could never finish (blocked a live member onboarding on Agent Index Dev 1). Now `action = args.action || (args.auth_code ? 'complete' : 'start')`, matching the onedrive adapter.
+- **`startAuth` messages name the completion call.** The `awaiting_code` / `awaiting_callback` responses now tell the caller to finish by calling `aifs_authenticate` with `action:"complete"` and `auth_code` (and not to re-issue `start`), so the completion contract is discoverable from the response itself — matching onedrive's self-documenting message.
+
+### Notes
+- `contract_version` unchanged at `2.0.0`. No behavior change to any data op; auth-dispatch + message only.
+- Bundle SHA / `bundle_built_at` recomputed at native build; `exec_bundle_checksum` updated by the build.
+
 ## [2.8.0] — 2026-07-01 — Release C.1.3.5 — M2 write-integrity parity
 
 Companion to core 3.22.5. Ports the C.1.3.4 OneDrive M2 durable read-back to gdrive so cross-backend write-integrity is verified, not inferred. Reference: `/shared/reference/ms365-adapter/59-gdrive-arm-M2-and-mitmcadefer-design.md`.

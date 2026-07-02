@@ -247,7 +247,14 @@ async function routeToolCall(adapter, toolName, args) {
       return adapter.getAuthStatus();
 
     case 'aifs_authenticate': {
-      const action = args.action || 'start';
+      // pkcerestart (bug 20260615-8d20ea22-pkcerestart) + memberauthbootstrap
+      // (bug 20260701-8d20ea22-memberauthbootstrap): if the caller passes an
+      // auth_code but omits action:"complete", infer complete. Defaulting to
+      // "start" silently re-ran the flow and ignored the code — so a driver that
+      // didn't already know the exact action:"complete" contract could never
+      // finish, which blocked a live member onboarding. onedrive has inferred
+      // this since the pkcerestart fix; this ports the same guard to gdrive.
+      const action = args.action || (args.auth_code ? 'complete' : 'start');
       if (action === 'start') {
         return adapter.startAuth();
       } else if (action === 'complete') {

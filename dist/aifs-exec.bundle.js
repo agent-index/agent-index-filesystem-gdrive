@@ -60125,7 +60125,7 @@ var GoogleDriveAdapter = class {
       return {
         status: "awaiting_code",
         auth_url: authUrl,
-        message: `Open this URL in your browser and sign in with your Google account. After granting access, the page will try to redirect to localhost \u2014 that redirect will fail, which is expected. Copy the full URL from your browser's address bar (it starts with "http://localhost:3939/callback?code=...") and paste it back here.`
+        message: `Open this URL in your browser and sign in with your Google account. After granting access, the page will try to redirect to localhost \u2014 that redirect will fail, which is expected. Copy the full URL from your browser's address bar (it starts with "http://localhost:3939/callback?code=...") and paste it back here. Then finish by calling aifs_authenticate again with action:"complete" and auth_code set to that pasted URL (or the bare code value) \u2014 do NOT call action:"start" again.`
       };
     }
     let callbackServerRunning = false;
@@ -60139,13 +60139,13 @@ var GoogleDriveAdapter = class {
       return {
         status: "awaiting_callback",
         auth_url: authUrl,
-        message: "Open this URL in your browser and sign in with your Google account. After granting access, the browser will complete the handshake automatically. If the redirect fails, paste the full URL from your browser's address bar back here."
+        message: `Open this URL in your browser and sign in with your Google account. After granting access, the browser will complete the handshake automatically; then call aifs_authenticate with action:"complete" to finalize. If the redirect fails, paste the full URL from your browser's address bar back here and call action:"complete" with auth_code set to it.`
       };
     }
     return {
       status: "awaiting_code",
       auth_url: authUrl,
-      message: `Open this URL in your browser and sign in with your Google account. After granting access, copy the full URL from your browser's address bar (it starts with "http://localhost:3939/callback?code=...") and paste it back here.`
+      message: `Open this URL in your browser and sign in with your Google account. After granting access, copy the full URL from your browser's address bar (it starts with "http://localhost:3939/callback?code=...") and paste it back here. Then finish by calling aifs_authenticate again with action:"complete" and auth_code set to that pasted URL (or the bare code value) \u2014 do NOT call action:"start" again.`
     };
   }
   async completeAuth(authCode) {
@@ -61892,7 +61892,7 @@ async function routeToolCall(adapter, toolName, args) {
     case "aifs_auth_status":
       return adapter.getAuthStatus();
     case "aifs_authenticate": {
-      const action = args.action || "start";
+      const action = args.action || (args.auth_code ? "complete" : "start");
       if (action === "start") {
         return adapter.startAuth();
       } else if (action === "complete") {
