@@ -2402,16 +2402,20 @@ export class GoogleDriveAdapter {
 
     const results = [];
     for (const f of files) {
-      // Reconstruct path: prefer cache lookup; fall back to scope + name
-      // when not in cache. Search results aren't critical-path for
-      // path resolution so an approximate path is acceptable.
-      let path = this._idToPath(f.id);
-      if (!path) {
-        path = scope === '/' ? `/${f.name}` : `${scope.replace(/\/$/, '')}/${f.name}`;
-      }
+      // Return a RESOLVABLE locator (searchpathunresolvable, C.1.3.7). Prefer a
+      // known human-readable path from the cache; otherwise fall back to the
+      // file's `id:{id}` anchor — which stat/read/exists/get_permissions resolve
+      // directly and is cross-drive-safe — NOT a fabricated `/{name}` path. The
+      // old fallback synthesized `/{name}` (or scope+name), which is not
+      // round-trippable: any caller that searched-then-read an uncached or
+      // cross-drive hit (e.g. library find-doc on a doc another member shared)
+      // got FILE_NOT_FOUND. Always include the raw `id` so callers can address
+      // the result unambiguously regardless of path.
+      const path = this._idToPath(f.id) || `id:${f.id}`;
       const isFolder = f.mimeType === 'application/vnd.google-apps.folder';
       results.push({
         path,
+        id: f.id,
         type: isFolder ? 'folder' : 'file',
         name: f.name,
         owner: f.owners?.[0]?.emailAddress || null,

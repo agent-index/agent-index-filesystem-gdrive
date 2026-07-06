@@ -1,5 +1,19 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.8.2] — 2026-07-06 — Release C.1.3.7 — search read-path fix
+
+Closes bug `20260706-8d20ea22-searchpathunresolvable`, surfaced by the Agent Index Dev 1 gdrive-arm validation (admin couldn't read a cross-drive-shared library doc via agent-index).
+
+### Fixed
+- **`search()` returns a resolvable locator per result.** It set each result's `path` from an `_idToPath(f.id)` session-cache lookup with a fabricated `/${f.name}` fallback when the id wasn't cached — under the (wrong) premise that "search results aren't critical-path for path resolution." That path was not round-trippable: any caller that searched-then-read an uncached or cross-drive hit (e.g. library `find-doc` on a doc another member shared) got `FILE_NOT_FOUND` from `stat`/`read`/`exists`. Now each result's `path` is the cached human-readable path when known, else the file's **`id:{fileId}` anchor** (which `stat`/`read`/`exists`/`get_permissions` resolve directly and is cross-drive-safe), and each result also carries the raw **`id`** so callers can address it unambiguously.
+
+### Added
+- Unit tests for the search→read round trip: an uncached hit returns an `id:{id}` anchor + `id` (not `/{name}`); a cached hit keeps its real path and still carries `id`.
+
+### Notes
+- `contract_version` unchanged at `2.0.0` (additive `id` field on search results + a resolvable `path`; no op contract change).
+- Bundle SHA / `bundle_built_at` recomputed at native build; `exec_bundle_checksum` updated by the build.
+
 ## [2.8.1] — 2026-07-02 — Release C.1.3.6 — member-auth parity (onedrive port)
 
 Closes the gdrive half of member-onboarding bug `20260701-8d20ea22-memberauthbootstrap`. onedrive has had both of these since the `pkcerestart` fix; this ports them to gdrive.

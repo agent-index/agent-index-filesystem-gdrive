@@ -266,5 +266,35 @@ test('write: M2 response-size mismatch -> AIFS_WRITE_VERIFY_FAILED before read-b
   assert.equal(calls.get, 0); // threw before any read-back
 });
 
+// ─── search: resolvable result locators (searchpathunresolvable, C.1.3.7) ──
+
+test('search: uncached hit returns an id:{id} anchor + id, not a fabricated /{name}', async () => {
+  const adapter = new GoogleDriveAdapter();
+  adapter.connection = {};            // My Drive shape — no drive_id/_listParams branch
+  adapter._ensureAuth = () => {};
+  adapter._idToPath = () => null;     // uncached — force the fallback path
+  adapter.drive = { files: { list: async () => ({ data: { files: [
+    { id: 'FILE123', name: 'gd-test', mimeType: 'application/json',
+      owners: [{ emailAddress: 't@x' }], modifiedTime: '2026-07-06T00:00:00Z' },
+  ] } }) } };
+  const { results } = await adapter.search({ scope: '/', nameContains: 'gd-test' });
+  assert.equal(results.length, 1);
+  assert.equal(results[0].id, 'FILE123');
+  assert.equal(results[0].path, 'id:FILE123'); // resolvable anchor, NOT '/gd-test'
+});
+
+test('search: cached hit keeps its real human-readable path (and still carries id)', async () => {
+  const adapter = new GoogleDriveAdapter();
+  adapter.connection = {};
+  adapter._ensureAuth = () => {};
+  adapter._idToPath = (id) => (id === 'FILE9' ? '/library/gd-test' : null);
+  adapter.drive = { files: { list: async () => ({ data: { files: [
+    { id: 'FILE9', name: 'gd-test', mimeType: 'application/json', owners: [], modifiedTime: null },
+  ] } }) } };
+  const { results } = await adapter.search({ scope: '/', nameContains: 'gd-test' });
+  assert.equal(results[0].path, '/library/gd-test');
+  assert.equal(results[0].id, 'FILE9');
+});
+
 // AIFS:FILE-END (in a JS comment, the test file practices the standard:)
 // AIFS:FILE-END

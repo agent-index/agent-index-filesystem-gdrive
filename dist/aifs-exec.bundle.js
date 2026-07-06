@@ -61630,13 +61630,11 @@ var GoogleDriveAdapter = class {
     const truncated = !!res?.data?.nextPageToken;
     const results = [];
     for (const f of files) {
-      let path = this._idToPath(f.id);
-      if (!path) {
-        path = scope === "/" ? `/${f.name}` : `${scope.replace(/\/$/, "")}/${f.name}`;
-      }
+      const path = this._idToPath(f.id) || `id:${f.id}`;
       const isFolder = f.mimeType === "application/vnd.google-apps.folder";
       results.push({
         path,
+        id: f.id,
         type: isFolder ? "folder" : "file",
         name: f.name,
         owner: f.owners?.[0]?.emailAddress || null,
