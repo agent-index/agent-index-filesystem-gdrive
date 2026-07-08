@@ -1,5 +1,11 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.9.0] — 2026-07-08 — Release C.1.4.0 — batch ops (bulkuploadserial)
+
+### Added
+- **`aifs_write_batch` and `aifs_stat_batch` — many files in ONE process.** Closes bug `20260706-8d20ea22-bulkuploadserial`: the one-process-per-op exec model made the publish-updates Step 0 SHA walk and dist uploads spawn a Node process per file (impractical for hundreds of files — which pushed agents to shortcut the walk; see core `pubstep0versionmatch`). `aifs_write_batch` uploads an array of `{path, content|content_file}` with the full M2 durable read-back per file; `aifs_stat_batch` returns size + Drive `md5Checksum` per path so the Step-0 diff can run without downloading content. Best-effort (a single file's failure doesn't abort the batch; per-file results returned).
+- **Duplicate-parent-folder safe by construction.** Google Drive permits same-named siblings, so unserialized concurrent writes to `/foo/bar/f1` + `/foo/bar/f2` can each create their own `/foo/bar`. `writeBatch` pre-ensures the UNIQUE set of parent dirs ONCE, up front, through the locked `_ensureParentDirs` (in-process + cross-process locks + query-before-create), then writes the files into the resolved parents — collapsing N caller processes into one and making the batch a net *reduction* in duplicate-folder risk vs N separate `aifs_write` calls. Regression-tested.
+
 ## [2.8.2] — 2026-07-06 — Release C.1.3.7 — search read-path fix
 
 Closes bug `20260706-8d20ea22-searchpathunresolvable`, surfaced by the Agent Index Dev 1 gdrive-arm validation (admin couldn't read a cross-drive-shared library doc via agent-index).

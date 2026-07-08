@@ -60470,6 +60470,98 @@ var GoogleDriveAdapter = class {
       this._handleDriveError(err, path);
     }
   }
+  /**
+   * writeBatch — upload many files in a SINGLE process (bug bulkuploadserial).
+   *
+   * The one-process-per-op exec model means N separate aifs_write calls are N
+   * separate Node processes racing to create shared parent folders, which on
+   * Google Drive (same-named siblings allowed) is the duplicate-parent-folder
+   * hazard. This op collapses the batch into ONE process and is concurrency-safe
+   * by construction:
+   *
+   *   1. It pre-ensures the UNIQUE set of parent dirs ONCE, up front, through
+   *      the same locked _ensureParentDirs() path (in-process + cross-process
+   *      locks + query-before-create). Folder creation is therefore single-
+   *      threaded and a batch that writes several files into the same NEW folder
+   *      creates that folder exactly once.
+   *   2. It then writes each file via this.write(), which now finds the parent
+   *      already resolved+cached (no write attempts folder creation) and still
+   *      performs the full M2 durable read-back verify per file.
+   *
+   * Best-effort: a single file's failure does not abort the batch; each file's
+   * outcome is returned so the caller can retry only the failures (parity with
+   * publish-updates Step 0's per-file behavior).
+   */
+  async writeBatch(entries, options = {}) {
+    this._ensureAuth();
+    if (!Array.isArray(entries) || entries.length === 0) {
+      throw new AifsError("INVALID_ARGS", "writeBatch: entries must be a non-empty array of {path, content}", { count: Array.isArray(entries) ? entries.length : 0 });
+    }
+    const uniqueParents = [...new Set(
+      entries.map((e) => this._parentPath(this._normalizePath(e.path)))
+    )];
+    for (const parent of uniqueParents) {
+      await this._ensureParentDirs(parent);
+    }
+    const results = [];
+    for (const entry of entries) {
+      try {
+        const r = await this.write(entry.path, entry.content, { ...options, ...entry.options || {} });
+        results.push({ path: entry.path, success: true, revision: r?.revision ?? null });
+      } catch (err) {
+        results.push({
+          path: entry.path,
+          success: false,
+          error: { code: err.code || "AIFS_WRITE_FAILED", message: err.message }
+        });
+      }
+    }
+    const failed = results.filter((r) => !r.success).length;
+    return { total: results.length, succeeded: results.length - failed, failed, results };
+  }
+  /**
+   * statBatch — metadata for many paths in a SINGLE process (bug bulkuploadserial).
+   *
+   * Makes the publish-updates Step 0 source→remote diff feasible without N Node
+   * spawns: returns size + Drive `md5Checksum` (a metadata field, no content
+   * download) per path, so the caller can detect changed files cheaply and then
+   * upload only those (with the full SHA-256 M2 verify). md5 is a change-detection
+   * signal only; the canonical integrity check remains SHA-256 on upload.
+   */
+  async statBatch(paths) {
+    this._ensureAuth();
+    if (!Array.isArray(paths) || paths.length === 0) {
+      throw new AifsError("INVALID_ARGS", "statBatch: paths must be a non-empty array", {});
+    }
+    const results = [];
+    for (const p of paths) {
+      try {
+        const id = await this._resolvePathToId(p);
+        if (!id) {
+          results.push({ path: p, exists: false });
+          continue;
+        }
+        const params = { fileId: id, fields: "id, name, size, mimeType, md5Checksum, headRevisionId" };
+        if (this.connection.drive_id)
+          params.supportsAllDrives = true;
+        const m = await this._withAutoRefresh(() => this.drive.files.get(params));
+        const d = m.data;
+        results.push({
+          path: p,
+          exists: true,
+          id: d.id,
+          name: d.name,
+          size: d.size != null ? parseInt(d.size, 10) : null,
+          mimeType: d.mimeType,
+          md5: d.md5Checksum || null,
+          revision: d.headRevisionId || null
+        });
+      } catch (err) {
+        results.push({ path: p, success: false, error: { code: err.code || "AIFS_STAT_FAILED", message: err.message } });
+      }
+    }
+    return { total: results.length, results };
+  }
   async list(path, recursive = false) {
     this._ensureAuth();
     const folderId = await this._resolvePathToId(path);
@@ -61934,6 +62026,40 @@ async function routeToolCall(adapter, toolName, args) {
       requireArgs(toolName, args, [["path", "path"], "new_owner"]);
       return adapter.transferOwnership(args.path, args.new_owner);
     }
+    case "aifs_write_batch": {
+      requireArgs(toolName, args, ["entries"]);
+      if (!Array.isArray(args.entries) || args.entries.length === 0) {
+        throw new AifsError("INVALID_ARGS", `${toolName}: 'entries' must be a non-empty array of {path, content|content_file}`, { tool: toolName });
+      }
+      const resolved = [];
+      for (let i = 0; i < args.entries.length; i++) {
+        const e = args.entries[i];
+        if (!e || typeof e.path !== "string" || e.path === "") {
+          throw new AifsError("INVALID_ARGS", `${toolName}: entries[${i}] is missing a 'path'`, { tool: toolName, index: i });
+        }
+        let content = e.content;
+        if (content === void 0 || content === null) {
+          if (typeof e.content_file === "string" && e.content_file.length > 0) {
+            const payload = await readFile3(e.content_file);
+            content = e.encoding === "base64" ? payload.toString("base64") : payload.toString("utf-8");
+          } else {
+            throw new AifsError("INVALID_ARGS", `${toolName}: entries[${i}] ('${e.path}') has neither 'content' nor 'content_file'`, { tool: toolName, index: i });
+          }
+        }
+        if (e.encoding === "base64" && !content.startsWith("base64:"))
+          content = "base64:" + content;
+        resolved.push({ path: e.path.replace(/\\/g, "/"), content });
+      }
+      return adapter.writeBatch(resolved);
+    }
+    case "aifs_stat_batch": {
+      requireArgs(toolName, args, ["paths"]);
+      if (!Array.isArray(args.paths) || args.paths.length === 0) {
+        throw new AifsError("INVALID_ARGS", `${toolName}: 'paths' must be a non-empty array`, { tool: toolName });
+      }
+      const paths = args.paths.map((p) => typeof p === "string" ? p.replace(/\\/g, "/") : p);
+      return adapter.statBatch(paths);
+    }
     default:
       throw new AifsError("UNKNOWN_TOOL", `Unknown tool: ${toolName}`, { tool: toolName });
   }
@@ -61958,7 +62084,10 @@ async function main() {
         "aifs_unshare",
         "aifs_get_permissions",
         "aifs_search",
-        "aifs_transfer_ownership"
+        "aifs_transfer_ownership",
+        // batch ops (bulkuploadserial)
+        "aifs_write_batch",
+        "aifs_stat_batch"
       ],
       examples: [
         `aifs-exec aifs_read '{"path":"/projects/foo/project.md"}'`,

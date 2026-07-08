@@ -307,6 +307,44 @@ async function routeToolCall(adapter, toolName, args) {
       return adapter.transferOwnership(args.path, args.new_owner);
     }
 
+    // ─── Batch ops (bulkuploadserial) — many files in ONE process ──────
+    case 'aifs_write_batch': {
+      requireArgs(toolName, args, ['entries']);
+      if (!Array.isArray(args.entries) || args.entries.length === 0) {
+        throw new AifsError('INVALID_ARGS', `${toolName}: 'entries' must be a non-empty array of {path, content|content_file}`, { tool: toolName });
+      }
+      // Resolve each entry's content the same three ways as aifs_write
+      // (content string, content_file local path, base64 encoding).
+      const resolved = [];
+      for (let i = 0; i < args.entries.length; i++) {
+        const e = args.entries[i];
+        if (!e || typeof e.path !== 'string' || e.path === '') {
+          throw new AifsError('INVALID_ARGS', `${toolName}: entries[${i}] is missing a 'path'`, { tool: toolName, index: i });
+        }
+        let content = e.content;
+        if (content === undefined || content === null) {
+          if (typeof e.content_file === 'string' && e.content_file.length > 0) {
+            const payload = await readFile(e.content_file);
+            content = e.encoding === 'base64' ? payload.toString('base64') : payload.toString('utf-8');
+          } else {
+            throw new AifsError('INVALID_ARGS', `${toolName}: entries[${i}] ('${e.path}') has neither 'content' nor 'content_file'`, { tool: toolName, index: i });
+          }
+        }
+        if (e.encoding === 'base64' && !content.startsWith('base64:')) content = 'base64:' + content;
+        resolved.push({ path: e.path.replace(/\\/g, '/'), content });
+      }
+      return adapter.writeBatch(resolved);
+    }
+
+    case 'aifs_stat_batch': {
+      requireArgs(toolName, args, ['paths']);
+      if (!Array.isArray(args.paths) || args.paths.length === 0) {
+        throw new AifsError('INVALID_ARGS', `${toolName}: 'paths' must be a non-empty array`, { tool: toolName });
+      }
+      const paths = args.paths.map(p => (typeof p === 'string' ? p.replace(/\\/g, '/') : p));
+      return adapter.statBatch(paths);
+    }
+
     default:
       throw new AifsError('UNKNOWN_TOOL', `Unknown tool: ${toolName}`, { tool: toolName });
   }
@@ -331,6 +369,9 @@ async function main() {
         'aifs_get_permissions',
         'aifs_search',
         'aifs_transfer_ownership',
+        // batch ops (bulkuploadserial)
+        'aifs_write_batch',
+        'aifs_stat_batch',
       ],
       examples: [
         'aifs-exec aifs_read \'{"path":"/projects/foo/project.md"}\'',

@@ -296,5 +296,61 @@ test('search: cached hit keeps its real human-readable path (and still carries i
   assert.equal(results[0].id, 'FILE9');
 });
 
+// ─── writeBatch: duplicate-parent-folder guard (bug bulkuploadserial) ──
+// Google Drive permits same-named siblings, so unserialized concurrent
+// writes to /a/b/f1 + /a/b/f2 can each create their own /a/b. writeBatch
+// pre-ensures the UNIQUE parent set once through the locked _ensureParentDirs,
+// so a batch sharing a brand-new parent creates that parent EXACTLY once.
+
+test('writeBatch: a shared new parent is created exactly once across the batch', async () => {
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const fs = await import('node:fs/promises');
+
+  const adapter = new GoogleDriveAdapter();
+  adapter.connection = {};                 // My Drive shape — no drive_id branches
+  adapter._ensureAuth = () => {};
+  adapter._folderLocks = new Map();
+  adapter._lockDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aifs-lock-'));
+  adapter._getRootId = async () => 'root'; // avoid a live root lookup
+  adapter._resolvePathToId = async () => null; // nothing pre-exists (all new)
+
+  const created = { folders: [], files: [] };
+  adapter.drive = {
+    files: {
+      // folder-existence query inside _ensureParentDirsInner → always "absent"
+      list: async () => ({ data: { files: [] } }),
+      create: async (params) => {
+        const body = params.requestBody;
+        if (body.mimeType === 'application/vnd.google-apps.folder') {
+          created.folders.push(body.name);
+          return { data: { id: 'folder-' + body.name, mimeType: body.mimeType } };
+        }
+        created.files.push(body.name);
+        return { data: { id: 'file-' + body.name, mimeType: 'text/plain', headRevisionId: 'r' } };
+      },
+      // committedSize()/verify path: size absent → "cannot confirm" (no false failure)
+      get: async () => ({ data: {} }),
+      update: async () => ({ data: { id: 'x', mimeType: 'text/plain', headRevisionId: 'r' } }),
+    },
+  };
+
+  const res = await adapter.writeBatch([
+    { path: '/a/b/f1.md', content: 'one' },
+    { path: '/a/b/f2.md', content: 'two' },
+    { path: '/a/b/f3.md', content: 'three' },
+  ]);
+
+  // The shared parents /a and /a/b are each created ONCE despite 3 files.
+  assert.equal(created.folders.filter((n) => n === 'a').length, 1);
+  assert.equal(created.folders.filter((n) => n === 'b').length, 1);
+  // All three files were written.
+  assert.equal(res.succeeded, 3);
+  assert.equal(res.failed, 0);
+  assert.equal(created.files.length, 3);
+
+  await fs.rm(adapter._lockDir, { recursive: true, force: true });
+});
+
 // AIFS:FILE-END (in a JS comment, the test file practices the standard:)
 // AIFS:FILE-END
