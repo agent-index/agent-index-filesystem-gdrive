@@ -60612,8 +60612,22 @@ var GoogleDriveAdapter = class {
         }
         pageToken = res.data.nextPageToken || null;
       } while (pageToken);
+      const normRoot = this._normalizePath(path);
+      const isDriveRoot = !!this.connection.drive_id && (normRoot === "/" || folderId === this.connection.drive_id);
+      if (isDriveRoot && entries.length === 0) {
+        const isMember = await this._detectDriveMembership();
+        if (!isMember) {
+          throw new AifsError(
+            "AIFS_ROOT_NOT_ENUMERABLE",
+            `list("${path}"): the Shared Drive root is not enumerable by a non-Drive-member \u2014 an empty result here does NOT mean the drive is empty. Address specific items by id-anchor (e.g. the folder_ids in org-config.json, or id:{fileId} from search), not by listing the root.`,
+            { path, reason: "non_drive_member_root_listing" }
+          );
+        }
+      }
       return entries;
     } catch (err) {
+      if (err instanceof AifsError)
+        throw err;
       this._handleDriveError(err, path);
     }
   }

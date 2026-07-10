@@ -1079,8 +1079,28 @@ export class GoogleDriveAdapter {
         pageToken = res.data.nextPageToken || null;
       } while (pageToken);
 
+      // rootsilent (bug 20260612-8d20ea22-rootsilent): a non-Drive-member cannot
+      // enumerate the Shared Drive root — the query returns [] not because the
+      // drive is empty but because they aren't a member of it. Returning a silent
+      // empty list misleads callers ("the org looks empty"). Fail loud with
+      // guidance to address items by id-anchor instead of listing the root.
+      const normRoot = this._normalizePath(path);
+      const isDriveRoot = !!this.connection.drive_id &&
+        (normRoot === '/' || folderId === this.connection.drive_id);
+      if (isDriveRoot && entries.length === 0) {
+        const isMember = await this._detectDriveMembership();
+        if (!isMember) {
+          throw new AifsError(
+            'AIFS_ROOT_NOT_ENUMERABLE',
+            `list("${path}"): the Shared Drive root is not enumerable by a non-Drive-member — an empty result here does NOT mean the drive is empty. Address specific items by id-anchor (e.g. the folder_ids in org-config.json, or id:{fileId} from search), not by listing the root.`,
+            { path, reason: 'non_drive_member_root_listing' }
+          );
+        }
+      }
+
       return entries;
     } catch (err) {
+      if (err instanceof AifsError) throw err;
       this._handleDriveError(err, path);
     }
   }

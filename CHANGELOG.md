@@ -1,5 +1,11 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.10.0] — 2026-07-10 — Release C.1.4.2 — advertise batch ops + rootsilent
+
+### Fixed
+- **`batchopsnotadvertised` — `writeBatch`/`statBatch` added to `adapter.json` `supported_operations`.** They were implemented + dispatched since 2.9.0 but not advertised, so consumers that gate on `supported_operations` fell back to per-file (the timeout the batch op was meant to remove). Now discoverable + reliably used.
+- **`rootsilent` — a non-Drive-member's empty root listing fails loud.** `list("/")` for a non-member returned a silent `[]` (they can't enumerate a Shared Drive they aren't a member of), which reads as "the org is empty." It now throws `AIFS_ROOT_NOT_ENUMERABLE` with guidance to address items by id-anchor (org-config `folder_id`s / `id:{fileId}`); a *member's* genuinely-empty root still returns `[]`. Regression-tested.
+
 ## [2.9.0] — 2026-07-08 — Release C.1.4.0 — batch ops (bulkuploadserial)
 
 ### Added

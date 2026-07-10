@@ -352,5 +352,33 @@ test('writeBatch: a shared new parent is created exactly once across the batch',
   await fs.rm(adapter._lockDir, { recursive: true, force: true });
 });
 
+// ─── list: rootsilent (non-member empty root must fail loud) ──────────
+
+test('list: a non-Drive-member empty root listing fails loud (rootsilent)', async () => {
+  const adapter = new GoogleDriveAdapter();
+  adapter.connection = { drive_id: 'DRIVE1' };
+  adapter._ensureAuth = () => {};
+  adapter._resolvePathToId = async () => 'DRIVE1';           // "/" resolves to the drive root
+  adapter._listParams = async () => ({ corpora: 'drive', driveId: 'DRIVE1', includeItemsFromAllDrives: true, supportsAllDrives: true });
+  adapter._detectDriveMembership = async () => false;         // NOT a drive member
+  adapter.drive = { files: { list: async () => ({ data: { files: [] } }) } };
+  await assert.rejects(
+    () => adapter.list('/'),
+    (err) => err.code === 'AIFS_ROOT_NOT_ENUMERABLE'
+  );
+});
+
+test('list: a Drive-member empty root listing returns [] normally (no false alarm)', async () => {
+  const adapter = new GoogleDriveAdapter();
+  adapter.connection = { drive_id: 'DRIVE1' };
+  adapter._ensureAuth = () => {};
+  adapter._resolvePathToId = async () => 'DRIVE1';
+  adapter._listParams = async () => ({ corpora: 'drive', driveId: 'DRIVE1', includeItemsFromAllDrives: true, supportsAllDrives: true });
+  adapter._detectDriveMembership = async () => true;          // IS a drive member
+  adapter.drive = { files: { list: async () => ({ data: { files: [] } }) } };
+  const out = await adapter.list('/');
+  assert.deepEqual(out, []);
+});
+
 // AIFS:FILE-END (in a JS comment, the test file practices the standard:)
 // AIFS:FILE-END
