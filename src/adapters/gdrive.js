@@ -2324,15 +2324,23 @@ export class GoogleDriveAdapter {
    * Map a Drive role back to an AIFS role.
    *
    * Drive can return roles beyond what AIFS exposes (organizer, fileOrganizer,
-   * owner). These are all "fully-privileged" roles with semantic differences
-   * Drive cares about; AIFS treats them all as `writer` since the consumer
-   * collections don't need finer detail. If a future use case needs the
-   * Drive-native role exposed, we can add an optional `native_role` field
-   * to the response without breaking the contract.
+   * owner). The org/Shared-Drive-privileged roles (organizer, fileOrganizer)
+   * collapse to `writer` since the consumer collections don't need finer
+   * detail. If a future use case needs the Drive-native role exposed, we can
+   * add an optional `native_role` field to the response without breaking the
+   * contract.
+   *
+   * bug getpermsownerwriter: `owner` must NOT collapse to `writer`. For a
+   * My-Drive-hosted item the Drive API reports the owning user's permission
+   * with role `owner` (and/or `owner: true`); verification logic keys on a
+   * literal `owner` role to identify the true owner, so we surface it
+   * verbatim. Shared-Drive items never carry an `owner` permission (ownership
+   * is the drive's, surfaced as `organizer`), so this does not affect
+   * Shared-Drive behavior.
    */
   _driveRoleToAifsRole(driveRole) {
     const map = {
-      owner: 'writer',
+      owner: 'owner',
       organizer: 'writer',
       fileOrganizer: 'writer',
       writer: 'writer',
@@ -2375,7 +2383,11 @@ export class GoogleDriveAdapter {
     // Shared Drives but it's harmless to request on personal Drive.
     const baseParams = {
       fileId,
-      fields: 'nextPageToken,permissions(id,emailAddress,type,role,permissionDetails)',
+      // bug getpermsownerwriter: request the `owner` boolean flag too. On
+      // My Drive the owning user's permission carries role:"owner"; some
+      // responses also (or instead) set owner:true. Requesting both lets us
+      // surface a literal `owner` role regardless of which signal Drive sends.
+      fields: 'nextPageToken,permissions(id,emailAddress,type,role,owner,permissionDetails)',
       pageSize: 100,
     };
     if (this.connection.drive_id) {
@@ -2413,9 +2425,17 @@ export class GoogleDriveAdapter {
         inheritedFrom = resolved !== null ? resolved : `gdrive-id:${detail.inheritedFrom}`;
       }
 
+      // bug getpermsownerwriter: identify the true owner of a My-Drive item.
+      // Prefer the permission's own role === 'owner'; also honor the
+      // owner:true flag in case Drive reports ownership only via the boolean.
+      // Everything else maps through _driveRoleToAifsRole unchanged.
+      const role = (p.role === 'owner' || p.owner === true)
+        ? 'owner'
+        : this._driveRoleToAifsRole(p.role);
+
       result.push({
         subject: p.emailAddress || (p.type === 'anyone' ? '*' : p.type),
-        role: this._driveRoleToAifsRole(p.role),
+        role,
         permission_id: p.id || null,
         inherited_from: inheritedFrom,
         granted_date: null, // Drive Permission resource has no creationTime

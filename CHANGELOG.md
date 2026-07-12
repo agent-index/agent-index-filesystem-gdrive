@@ -1,5 +1,10 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.11.0] — 2026-07-12 — Release C.1.4.3 — surface owner role (getpermsownerwriter)
+
+### Fixed
+- **`aifs_get_permissions` surfaces the true `owner` role for My-Drive items (`getpermsownerwriter`).** `_driveRoleToAifsRole` mapped `owner → writer`, so ownership couldn't be read back from the permissions list; now the owning user of a My-Drive item is reported with role `owner` (from the Drive permission's `role === 'owner'` / `owner: true` flag, with the `owner` field added to the query). `reader`/`writer`/`organizer` mappings unchanged; Shared-Drive items (no single owner) still report `organizer → writer`. Adds regression tests (suite green). OneDrive parity is tracked separately (Graph exposes the owner differently) — see `onedriveownernotsurfaced`.
+
 ## [2.10.0] — 2026-07-10 — Release C.1.4.2 — advertise batch ops + rootsilent
 
 ### Fixed

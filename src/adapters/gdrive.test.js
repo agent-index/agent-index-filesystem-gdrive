@@ -380,5 +380,55 @@ test('list: a Drive-member empty root listing returns [] normally (no false alar
   assert.deepEqual(out, []);
 });
 
+// ─── getPermissions: owner role (bug getpermsownerwriter) ─────────────
+// A My-Drive-hosted item's owner must surface with a literal `owner` role,
+// NOT `writer`. Verification logic keys on `owner` to find the true owner.
+// reader/writer mappings are unchanged; Shared-Drive items never carry an
+// `owner` permission (ownership is the drive's → organizer → writer).
+
+function permsAdapter(permissions, connection = {}) {
+  const adapter = new GoogleDriveAdapter();
+  adapter.connection = connection;
+  adapter._ensureAuth = () => {};
+  adapter._resolvePathToId = async () => 'file-1';
+  adapter.drive = {
+    permissions: {
+      list: async () => ({ data: { permissions } }),
+    },
+  };
+  return adapter;
+}
+
+test('getPermissions: My-Drive owner (role:"owner") surfaces as owner, not writer', async () => {
+  const adapter = permsAdapter([
+    { id: 'p1', emailAddress: 'owner@x', type: 'user', role: 'owner' },
+    { id: 'p2', emailAddress: 'collab@x', type: 'user', role: 'writer' },
+    { id: 'p3', emailAddress: 'viewer@x', type: 'user', role: 'reader' },
+  ]);
+  const { permissions } = await adapter.getPermissions('/doc.md');
+  const byEmail = Object.fromEntries(permissions.map((p) => [p.subject, p.role]));
+  assert.equal(byEmail['owner@x'], 'owner');  // bug getpermsownerwriter: was 'writer'
+  assert.equal(byEmail['collab@x'], 'writer'); // unchanged
+  assert.equal(byEmail['viewer@x'], 'reader'); // unchanged
+});
+
+test('getPermissions: owner signaled only via owner:true flag also surfaces as owner', async () => {
+  const adapter = permsAdapter([
+    // Defensive case: role reported as writer but owner:true flag set.
+    { id: 'p1', emailAddress: 'owner@x', type: 'user', role: 'writer', owner: true },
+  ]);
+  const { permissions } = await adapter.getPermissions('/doc.md');
+  assert.equal(permissions[0].role, 'owner');
+});
+
+test('getPermissions: Shared-Drive item has no owner (organizer → writer, unchanged)', async () => {
+  const adapter = permsAdapter(
+    [{ id: 'p1', emailAddress: 'mgr@x', type: 'user', role: 'organizer' }],
+    { drive_id: 'DRIVE1' }
+  );
+  const { permissions } = await adapter.getPermissions('/doc.md');
+  assert.equal(permissions[0].role, 'writer'); // organizer still collapses to writer
+});
+
 // AIFS:FILE-END (in a JS comment, the test file practices the standard:)
 // AIFS:FILE-END

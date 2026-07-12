@@ -61574,15 +61574,23 @@ var GoogleDriveAdapter = class {
    * Map a Drive role back to an AIFS role.
    *
    * Drive can return roles beyond what AIFS exposes (organizer, fileOrganizer,
-   * owner). These are all "fully-privileged" roles with semantic differences
-   * Drive cares about; AIFS treats them all as `writer` since the consumer
-   * collections don't need finer detail. If a future use case needs the
-   * Drive-native role exposed, we can add an optional `native_role` field
-   * to the response without breaking the contract.
+   * owner). The org/Shared-Drive-privileged roles (organizer, fileOrganizer)
+   * collapse to `writer` since the consumer collections don't need finer
+   * detail. If a future use case needs the Drive-native role exposed, we can
+   * add an optional `native_role` field to the response without breaking the
+   * contract.
+   *
+   * bug getpermsownerwriter: `owner` must NOT collapse to `writer`. For a
+   * My-Drive-hosted item the Drive API reports the owning user's permission
+   * with role `owner` (and/or `owner: true`); verification logic keys on a
+   * literal `owner` role to identify the true owner, so we surface it
+   * verbatim. Shared-Drive items never carry an `owner` permission (ownership
+   * is the drive's, surfaced as `organizer`), so this does not affect
+   * Shared-Drive behavior.
    */
   _driveRoleToAifsRole(driveRole) {
     const map2 = {
-      owner: "writer",
+      owner: "owner",
       organizer: "writer",
       fileOrganizer: "writer",
       writer: "writer",
@@ -61620,7 +61628,11 @@ var GoogleDriveAdapter = class {
     }
     const baseParams = {
       fileId,
-      fields: "nextPageToken,permissions(id,emailAddress,type,role,permissionDetails)",
+      // bug getpermsownerwriter: request the `owner` boolean flag too. On
+      // My Drive the owning user's permission carries role:"owner"; some
+      // responses also (or instead) set owner:true. Requesting both lets us
+      // surface a literal `owner` role regardless of which signal Drive sends.
+      fields: "nextPageToken,permissions(id,emailAddress,type,role,owner,permissionDetails)",
       pageSize: 100
     };
     if (this.connection.drive_id) {
@@ -61652,9 +61664,10 @@ var GoogleDriveAdapter = class {
         const resolved = this._idToPath(detail.inheritedFrom);
         inheritedFrom = resolved !== null ? resolved : `gdrive-id:${detail.inheritedFrom}`;
       }
+      const role = p.role === "owner" || p.owner === true ? "owner" : this._driveRoleToAifsRole(p.role);
       result.push({
         subject: p.emailAddress || (p.type === "anyone" ? "*" : p.type),
-        role: this._driveRoleToAifsRole(p.role),
+        role,
         permission_id: p.id || null,
         inherited_from: inheritedFrom,
         granted_date: null
