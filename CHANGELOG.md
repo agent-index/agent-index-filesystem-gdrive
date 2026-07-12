@@ -1,5 +1,10 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.11.1] — 2026-07-12 — Release C.1.4.3.1 — fix aifs_get_permissions regression (getpermsinvalidownerfield)
+
+### Fixed
+- **`aifs_get_permissions` no longer requests the invalid `owner` permission field (`getpermsinvalidownerfield`).** 2.11.0's getpermsownerwriter fix added `owner` to the Drive `permissions.list` fields selector, but the Drive v3 *permission* resource has no `owner` field — so every `aifs_get_permissions` call failed with "Invalid field selection owner" (broke invite pre-state diffs, publish 6e reconcile, find-doc reconcile, transfer gate). The selector now requests only real permission fields; the owner is still surfaced (role `owner`) via the permission's `role === 'owner'` (the `p.owner === true` fallback is removed — it was meaningless). Test suite corrected to not mock a nonexistent field and now guards the selector against re-introducing `owner`.
+
 ## [2.11.0] — 2026-07-12 — Release C.1.4.3 — surface owner role (getpermsownerwriter)
 
 ### Fixed

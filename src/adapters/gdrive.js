@@ -2383,11 +2383,13 @@ export class GoogleDriveAdapter {
     // Shared Drives but it's harmless to request on personal Drive.
     const baseParams = {
       fileId,
-      // bug getpermsownerwriter: request the `owner` boolean flag too. On
-      // My Drive the owning user's permission carries role:"owner"; some
-      // responses also (or instead) set owner:true. Requesting both lets us
-      // surface a literal `owner` role regardless of which signal Drive sends.
-      fields: 'nextPageToken,permissions(id,emailAddress,type,role,owner,permissionDetails)',
+      // bug getpermsownerwriter / getpermsinvalidownerfield: the Drive v3
+      // *permission* resource has NO `owner` field (ownership is conveyed by
+      // role:"owner"; only the file resource has owners[]). Requesting `owner`
+      // here makes permissions.list reject the whole call with "Invalid field
+      // selection owner" (2.11.0 regression). Select only real permission
+      // fields; the owner is identified below via role === 'owner'.
+      fields: 'nextPageToken,permissions(id,emailAddress,type,role,permissionDetails)',
       pageSize: 100,
     };
     if (this.connection.drive_id) {
@@ -2425,11 +2427,12 @@ export class GoogleDriveAdapter {
         inheritedFrom = resolved !== null ? resolved : `gdrive-id:${detail.inheritedFrom}`;
       }
 
-      // bug getpermsownerwriter: identify the true owner of a My-Drive item.
-      // Prefer the permission's own role === 'owner'; also honor the
-      // owner:true flag in case Drive reports ownership only via the boolean.
-      // Everything else maps through _driveRoleToAifsRole unchanged.
-      const role = (p.role === 'owner' || p.owner === true)
+      // bug getpermsownerwriter: identify the true owner of a My-Drive item
+      // from the Drive permission's own role === 'owner' (the only valid
+      // signal — the permission resource has no `owner` boolean; see
+      // getpermsinvalidownerfield). Everything else maps through
+      // _driveRoleToAifsRole unchanged.
+      const role = p.role === 'owner'
         ? 'owner'
         : this._driveRoleToAifsRole(p.role);
 

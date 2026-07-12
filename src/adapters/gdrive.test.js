@@ -391,9 +391,13 @@ function permsAdapter(permissions, connection = {}) {
   adapter.connection = connection;
   adapter._ensureAuth = () => {};
   adapter._resolvePathToId = async () => 'file-1';
+  adapter._lastPermsFields = null;
   adapter.drive = {
     permissions: {
-      list: async () => ({ data: { permissions } }),
+      list: async (params) => {
+        adapter._lastPermsFields = params?.fields ?? null;
+        return { data: { permissions } };
+      },
     },
   };
   return adapter;
@@ -412,13 +416,19 @@ test('getPermissions: My-Drive owner (role:"owner") surfaces as owner, not write
   assert.equal(byEmail['viewer@x'], 'reader'); // unchanged
 });
 
-test('getPermissions: owner signaled only via owner:true flag also surfaces as owner', async () => {
+test('getPermissions: does NOT request the invalid `owner` permission field (getpermsinvalidownerfield guard)', async () => {
   const adapter = permsAdapter([
-    // Defensive case: role reported as writer but owner:true flag set.
-    { id: 'p1', emailAddress: 'owner@x', type: 'user', role: 'writer', owner: true },
+    { id: 'p1', emailAddress: 'owner@x', type: 'user', role: 'owner' },
   ]);
   const { permissions } = await adapter.getPermissions('/doc.md');
-  assert.equal(permissions[0].role, 'owner');
+  assert.equal(permissions[0].role, 'owner'); // owner still detected via role
+  // The Drive v3 *permission* resource has NO `owner` field; requesting it makes
+  // permissions.list fail with "Invalid field selection owner" (2.11.0 regression).
+  assert.ok(adapter._lastPermsFields, 'fields selector should have been recorded');
+  assert.ok(
+    !/permissions\([^)]*\bowner\b/.test(adapter._lastPermsFields),
+    'fields selector must not request the invalid `owner` permission field'
+  );
 });
 
 test('getPermissions: Shared-Drive item has no owner (organizer → writer, unchanged)', async () => {

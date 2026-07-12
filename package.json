@@ -1,6 +1,6 @@
 {
   "name": "@agent-index/filesystem-gdrive",
-  "version": "2.11.0",
+  "version": "2.11.1",
   "description": "Agent Index Filesystem \u2014 Google Drive adapter (on-demand executor)",
   "type": "module",
   "main": "src/exec.mjs",
