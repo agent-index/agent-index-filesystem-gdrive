@@ -440,5 +440,82 @@ test('getPermissions: Shared-Drive item has no owner (organizer → writer, unch
   assert.equal(permissions[0].role, 'writer'); // organizer still collapses to writer
 });
 
+
+// ─── getPermissions: direct grant layered on inherited access (getpermsinheritedmask) ───
+// Drive returns ONE permission per principal with permissionDetails[] listing each
+// source. A direct writer on top of an inherited reader must surface as TWO entries.
+
+test('getPermissions: direct writer + inherited reader on the same principal → two entries', async () => {
+  const adapter = permsAdapter(
+    [{
+      id: 'g1', emailAddress: 'all@x', type: 'group', role: 'writer',
+      permissionDetails: [
+        { permissionType: 'file', role: 'reader', inherited: true, inheritedFrom: 'SHARED-ID' },
+        { permissionType: 'file', role: 'writer', inherited: false },
+      ],
+    }],
+    { drive_id: 'DRIVE1' }
+  );
+  adapter.pathCache = new Map([['/shared', { id: 'SHARED-ID' }]]);
+  const { permissions } = await adapter.getPermissions('/shared/projects/');
+  const direct = permissions.find((p) => p.inherited_from === null);
+  const inh = permissions.find((p) => p.inherited_from !== null);
+  assert.ok(direct, 'the direct grant must be reported');
+  assert.equal(direct.role, 'writer');
+  assert.equal(direct.subject, 'all@x');
+  assert.ok(inh, 'the inherited grant must still be reported');
+  assert.equal(inh.role, 'reader');
+  assert.equal(inh.inherited_from, '/shared');
+});
+
+test('getPermissions: includeInherited:false keeps the direct grant of a mixed permission', async () => {
+  const adapter = permsAdapter(
+    [{
+      id: 'g1', emailAddress: 'all@x', type: 'group', role: 'writer',
+      permissionDetails: [
+        { permissionType: 'file', role: 'reader', inherited: true, inheritedFrom: 'SHARED-ID' },
+        { permissionType: 'file', role: 'writer', inherited: false },
+      ],
+    }],
+    { drive_id: 'DRIVE1' }
+  );
+  const { permissions } = await adapter.getPermissions('/x/', { includeInherited: false });
+  assert.equal(permissions.length, 1);
+  assert.equal(permissions[0].role, 'writer');
+  assert.equal(permissions[0].inherited_from, null);
+});
+
+test('getPermissions: purely inherited permission → one inherited entry (unchanged)', async () => {
+  const adapter = permsAdapter(
+    [{
+      id: 'g1', emailAddress: 'all@x', type: 'group', role: 'reader',
+      permissionDetails: [{ permissionType: 'file', role: 'reader', inherited: true, inheritedFrom: 'SHARED-ID' }],
+    }],
+    { drive_id: 'DRIVE1' }
+  );
+  const { permissions } = await adapter.getPermissions('/x/');
+  assert.equal(permissions.length, 1);
+  assert.equal(permissions[0].role, 'reader');
+  assert.ok(permissions[0].inherited_from);
+  const none = await adapter.getPermissions('/x/', { includeInherited: false });
+  assert.equal(none.permissions.length, 0);
+});
+
+test('getPermissions: duplicate sources (file + member detail) are de-duplicated', async () => {
+  const adapter = permsAdapter(
+    [{
+      id: 'u1', emailAddress: 'mgr@x', type: 'user', role: 'organizer',
+      permissionDetails: [
+        { permissionType: 'member', role: 'organizer', inherited: true, inheritedFrom: 'DRIVE1' },
+        { permissionType: 'file', role: 'organizer', inherited: true, inheritedFrom: 'DRIVE1' },
+      ],
+    }],
+    { drive_id: 'DRIVE1' }
+  );
+  const { permissions } = await adapter.getPermissions('/x/');
+  assert.equal(permissions.length, 1);
+  assert.equal(permissions[0].role, 'writer');
+});
+
 // AIFS:FILE-END (in a JS comment, the test file practices the standard:)
 // AIFS:FILE-END

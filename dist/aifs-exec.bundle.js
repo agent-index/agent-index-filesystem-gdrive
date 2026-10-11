@@ -61657,24 +61657,44 @@ var GoogleDriveAdapter = class {
     }
     const result = [];
     for (const p of all) {
-      const detail = p.permissionDetails && p.permissionDetails[0] || null;
-      const isInherited = detail?.inherited === true;
-      if (!includeInherited && isInherited)
-        continue;
-      let inheritedFrom = null;
-      if (isInherited && detail?.inheritedFrom) {
-        const resolved = this._idToPath(detail.inheritedFrom);
-        inheritedFrom = resolved !== null ? resolved : `gdrive-id:${detail.inheritedFrom}`;
+      const subject = p.emailAddress || (p.type === "anyone" ? "*" : p.type);
+      const mapRole = (r) => r === "owner" ? "owner" : this._driveRoleToAifsRole(r);
+      const details = Array.isArray(p.permissionDetails) ? p.permissionDetails : [];
+      const sources = [];
+      if (details.length === 0) {
+        sources.push({ role: mapRole(p.role), inheritedFrom: null, inherited: false });
+      } else {
+        for (const d of details) {
+          const inherited = d?.inherited === true;
+          let inheritedFrom = null;
+          if (inherited) {
+            if (d.inheritedFrom) {
+              const resolved = this._idToPath(d.inheritedFrom);
+              inheritedFrom = resolved !== null ? resolved : `gdrive-id:${d.inheritedFrom}`;
+            } else {
+              inheritedFrom = "gdrive-id:unknown";
+            }
+          }
+          sources.push({ role: mapRole(d?.role || p.role), inheritedFrom, inherited });
+        }
       }
-      const role = p.role === "owner" ? "owner" : this._driveRoleToAifsRole(p.role);
-      result.push({
-        subject: p.emailAddress || (p.type === "anyone" ? "*" : p.type),
-        role,
-        permission_id: p.id || null,
-        inherited_from: inheritedFrom,
-        granted_date: null
-        // Drive Permission resource has no creationTime
-      });
+      const seen = /* @__PURE__ */ new Set();
+      for (const src of sources) {
+        if (!includeInherited && src.inherited)
+          continue;
+        const key = `${src.role}|${src.inheritedFrom}`;
+        if (seen.has(key))
+          continue;
+        seen.add(key);
+        result.push({
+          subject,
+          role: src.role,
+          permission_id: p.id || null,
+          inherited_from: src.inheritedFrom,
+          granted_date: null
+          // Drive Permission resource has no creationTime
+        });
+      }
     }
     return { permissions: result };
   }

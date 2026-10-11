@@ -2414,35 +2414,52 @@ export class GoogleDriveAdapter {
 
     const result = [];
     for (const p of all) {
-      // Determine inheritance. permissionDetails is an array (one entry
-      // per inheritance source); we use the first as the canonical source.
-      const detail = (p.permissionDetails && p.permissionDetails[0]) || null;
-      const isInherited = detail?.inherited === true;
-
-      if (!includeInherited && isInherited) continue;
-
-      let inheritedFrom = null;
-      if (isInherited && detail?.inheritedFrom) {
-        const resolved = this._idToPath(detail.inheritedFrom);
-        inheritedFrom = resolved !== null ? resolved : `gdrive-id:${detail.inheritedFrom}`;
+      // bug getpermsinheritedmask (3.32.0 live test): Drive returns ONE permission
+      // per principal per file, with permissionDetails[] listing every SOURCE of
+      // that principal's access (e.g. reader inherited from /shared AND a direct
+      // writer on this folder). Pre-2.12.0 we took permissionDetails[0] only, so a
+      // direct grant layered on an inherited one was reported as inherited —
+      // the core permission-changes procedure then marked applied writer grants
+      // verify_mismatch, and could not plan an unshare of a direct grant that
+      // co-exists with inherited access. Emit one entry per distinct source.
+      const subject = p.emailAddress || (p.type === 'anyone' ? '*' : p.type);
+      // bug getpermsownerwriter: the true owner of a My-Drive item is identified
+      // by the permission's own role === 'owner' (never via a nonexistent field).
+      const mapRole = (r) => (r === 'owner' ? 'owner' : this._driveRoleToAifsRole(r));
+      const details = Array.isArray(p.permissionDetails) ? p.permissionDetails : [];
+      const sources = [];
+      if (details.length === 0) {
+        // No details (personal Drive): a single explicit grant.
+        sources.push({ role: mapRole(p.role), inheritedFrom: null, inherited: false });
+      } else {
+        for (const d of details) {
+          const inherited = d?.inherited === true;
+          let inheritedFrom = null;
+          if (inherited) {
+            if (d.inheritedFrom) {
+              const resolved = this._idToPath(d.inheritedFrom);
+              inheritedFrom = resolved !== null ? resolved : `gdrive-id:${d.inheritedFrom}`;
+            } else {
+              inheritedFrom = 'gdrive-id:unknown';
+            }
+          }
+          sources.push({ role: mapRole(d?.role || p.role), inheritedFrom, inherited });
+        }
       }
-
-      // bug getpermsownerwriter: identify the true owner of a My-Drive item
-      // from the Drive permission's own role === 'owner' (the only valid
-      // signal — the permission resource has no `owner` boolean; see
-      // getpermsinvalidownerfield). Everything else maps through
-      // _driveRoleToAifsRole unchanged.
-      const role = p.role === 'owner'
-        ? 'owner'
-        : this._driveRoleToAifsRole(p.role);
-
-      result.push({
-        subject: p.emailAddress || (p.type === 'anyone' ? '*' : p.type),
-        role,
-        permission_id: p.id || null,
-        inherited_from: inheritedFrom,
-        granted_date: null, // Drive Permission resource has no creationTime
-      });
+      const seen = new Set();
+      for (const src of sources) {
+        if (!includeInherited && src.inherited) continue;
+        const key = `${src.role}|${src.inheritedFrom}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push({
+          subject,
+          role: src.role,
+          permission_id: p.id || null,
+          inherited_from: src.inheritedFrom,
+          granted_date: null, // Drive Permission resource has no creationTime
+        });
+      }
     }
 
     return { permissions: result };

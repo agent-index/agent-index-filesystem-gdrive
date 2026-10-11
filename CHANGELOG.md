@@ -1,5 +1,10 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.11.2] — <RELEASE_DATE> — direct grants on top of inherited access (getpermsinheritedmask)
+
+### Fixed
+- **`aifs_get_permissions` reports one entry per access source (`getpermsinheritedmask`, found in the agent-index-core 3.32.0 live test).** Drive returns one permission per principal per file, with `permissionDetails[]` listing each source of that principal's access. The adapter read only the first entry, so a direct grant layered on inherited access (for example a direct writer on `/shared/projects/` for a group that also inherits reader from `/shared`) was reported as *inherited*. The core permission-changes procedure then marked every such grant `verify_mismatch`, and couldn't plan removing a direct grant that coexists with inherited access. Each distinct source is now its own entry (direct ones with `inherited_from: null`), duplicate sources are merged, and `includeInherited: false` keeps the direct part of a mixed permission instead of dropping it. Four regression tests added (suite 31/31).
+
 ## [2.11.1] — 2026-07-12 — Release C.1.4.3.1 — fix aifs_get_permissions regression (getpermsinvalidownerfield)
 
 ### Fixed
