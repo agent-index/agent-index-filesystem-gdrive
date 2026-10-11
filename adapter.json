@@ -25,6 +25,8 @@
   ],
   "supported_operations_pending": [],
   "write_supports_if_revision": true,
+  "write_supports_content_file": true,
+  "write_supports_content_stdin": true,
   "backend_id": "gdrive",
   "auth_method": "oauth2",
   "connection_schema": {

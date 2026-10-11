@@ -14,7 +14,7 @@ Members do not interact with this package directly. The adapter handles backend 
 - Path-to-ID resolution with caching for performance
 - OAuth2 per-member authentication with automatic token refresh
 - Recursive parent directory creation on write
-- All 14 `aifs_*` tools supported (9 core + 5 access-control as of v2.2.0 / contract v2.0.0)
+- All 16 `aifs_*` tools supported (9 core + 5 access-control as of v2.2.0 / contract v2.0.0, + 2 batch ops as of v2.9.0)
 - Revision-aware writes via `if_revision` parameter on `aifs_write` (v2.2.0+)
 - `aifs_share` / `aifs_unshare` / `aifs_get_permissions` wrap Drive's Permissions API
 - `aifs_search` wraps `files.list` with permission-aware enumeration

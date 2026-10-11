@@ -1,5 +1,22 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [Unreleased] — --help documents every tool and argument (f848, e428)
+
+Version is set at release.
+
+### Changed
+- **`--help` lists all 16 tools with their arguments.** It previously listed 9 tools and no arguments (bug `f848`). `src/aifs-exec.sh` now gives each tool's JSON argument signature, the three `aifs_write` content sources (`content`, `content_file`, `content_stdin`) with their limits and precedence, what `encoding: "base64"` means for a file or stdin payload, `if_revision`, and the fact that unknown arguments are ignored. Two examples are added. The executor's JSON `--help` (`src/exec.mjs`) gains an `arguments` map and `notes` with the same content. No behaviour change.
+- **README** counts 16 `aifs_*` tools: 9 core, 5 access-control, and the 2 batch ops added in 2.9.0. It previously said 14.
+
+### Added
+- **`adapter.json`: `write_supports_content_file` and `write_supports_content_stdin`** (both `true`), alongside `write_supports_if_revision`, so a consumer can detect support. `aifs_write` has accepted both since 2.6.0, but no documentation surface showed them (bug `e428`).
+
+### Fixed
+- The `aifs_write_batch` comment in `src/exec.mjs` said entries resolve content "the same three ways as aifs_write". Batch entries accept `content` and `content_file` only, not `content_stdin`.
+- Removed `dist/test_write.tmp`, an empty file committed by mistake.
+
+`dist/` is not rebuilt in this change. The build copies `src/aifs-exec.sh` into `dist/` and restamps `adapter.json`, which happens at release.
+
 ## [2.11.1] — 2026-07-12 — Release C.1.4.3.1 — fix aifs_get_permissions regression (getpermsinvalidownerfield)
 
 ### Fixed
