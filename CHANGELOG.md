@@ -1,5 +1,13 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.11.4] — <RELEASE_DATE> — ownership transfer for My-Drive items on Shared-Drive orgs (xferitemdrive)
+
+### Fixed
+- **Ownership transfer refused every item on a Shared-Drive org (`xferitemdrive`, Dev Two live test finding 48).** `transferOwnership` returned NOT_IMPLEMENTED whenever the org has a `drive_id`, without checking where the item lives. A private library doc sits in the member's own My Drive, where Drive does allow the transfer, so no doc could ever change owner (B10). The adapter now reads the item's own `driveId`: an item inside a Shared Drive is still NOT_IMPLEMENTED; a My-Drive item is transferred. For a folder, the folder and every descendant the caller owns are transferred (a folder's ownership doesn't carry its contents); a descendant that fails is reported in `failed_items` with `partial: true`.
+- **`aifs_stat` returns `drive_id`** (the Shared Drive the item lives in, `null` for My Drive; `statdriveid`, finding 39). Pointers can now record `item_drive_id`, and member-bootstrap can tell a member's own space from a Shared-Drive folder.
+- **A refused permissions read names the read** (`permsverb`, finding 47). A reader's `aifs_get_permissions` said "Permission denied to share"; it now says "read permissions of". Unshare and transfer name their own operations too.
+- Five regression tests added (suite 41/41).
+
 ## [2.11.3] — <RELEASE_DATE> — path lookups stay in this org's drive (crossorgpath)
 
 ### Fixed

@@ -586,3 +586,83 @@ test('read: encoding:"base64" returns base64: form even for text content', async
   const { adapter: a2 } = mockAdapter({ getImpls: [() => media('hello')] });
   assert.equal(await a2.read('/x.txt'), 'hello');
 });
+
+// ─── xferitemdrive (2.11.4): ownership transfer decided by the item's drive ──
+
+function xferAdapter({ itemDriveId = undefined, mimeType = 'application/vnd.google-apps.folder', children = {}, failIds = [] } = {}) {
+  const adapter = new GoogleDriveAdapter();
+  adapter.connection = { drive_id: 'ORG_DRIVE' }; // a Shared-Drive org
+  adapter._ensureAuth = () => {};
+  adapter._withAutoRefresh = (fn) => fn();
+  adapter._resolvePathToId = async () => 'ROOT';
+  const created = [];
+  adapter.drive = {
+    files: {
+      get: async () => ({ data: { id: 'ROOT', mimeType, driveId: itemDriveId } }),
+      list: async (p) => {
+        const parent = /'([^']+)' in parents/.exec(p.q)[1];
+        return { data: { files: children[parent] || [] } };
+      },
+    },
+    permissions: {
+      create: async (p) => {
+        if (failIds.includes(p.fileId)) { const e = new Error('nope'); e.code = 500; throw e; }
+        created.push(p.fileId);
+        return { data: {} };
+      },
+    },
+  };
+  return { adapter, created };
+}
+
+test('transferOwnership: My-Drive folder on a Shared-Drive org transfers folder + owned contents', async () => {
+  const { adapter, created } = xferAdapter({
+    children: {
+      ROOT: [
+        { id: 'DOC', mimeType: 'text/markdown', ownedByMe: true },
+        { id: 'META', mimeType: 'application/json', ownedByMe: true },
+        { id: 'ASSETS', mimeType: 'application/vnd.google-apps.folder', ownedByMe: true },
+        { id: 'NOTMINE', mimeType: 'text/plain', ownedByMe: false },
+      ],
+      ASSETS: [{ id: 'IMG', mimeType: 'image/png', ownedByMe: true }],
+    },
+  });
+  const r = await adapter.transferOwnership('id:ROOT', 'new@x.com');
+  assert.deepEqual(created, ['ROOT', 'DOC', 'META', 'ASSETS', 'IMG']);
+  assert.equal(r.items, 5);
+  assert.equal(r.partial, undefined);
+});
+
+test('transferOwnership: an item inside a Shared Drive is NOT_IMPLEMENTED', async () => {
+  const { adapter, created } = xferAdapter({ itemDriveId: 'ORG_DRIVE' });
+  await assert.rejects(() => adapter.transferOwnership('id:ROOT', 'new@x.com'), (e) => e.code === 'NOT_IMPLEMENTED');
+  assert.deepEqual(created, []);
+});
+
+test('transferOwnership: a failing child is reported, the item itself still transfers', async () => {
+  const { adapter } = xferAdapter({
+    children: { ROOT: [{ id: 'DOC', mimeType: 'text/markdown', ownedByMe: true }] },
+    failIds: ['DOC'],
+  });
+  const r = await adapter.transferOwnership('id:ROOT', 'new@x.com');
+  assert.equal(r.partial, true);
+  assert.equal(r.failed_items[0].id, 'DOC');
+});
+
+test('stat: returns drive_id (null for My Drive)', async () => {
+  const { adapter } = mockAdapter({ getImpls: [() => ({ data: { size: '3', driveId: 'SD1' } }), () => ({ data: { size: '3' } })] });
+  adapter.connection = { drive_id: 'SD1' };
+  adapter._withAutoRefresh = (fn) => fn();
+  assert.equal((await adapter.stat('/a')).drive_id, 'SD1');
+  assert.equal((await adapter.stat('/b')).drive_id, null);
+});
+
+test('getPermissions: a 403 names the read, not "share" (permsverb)', async () => {
+  const adapter = new GoogleDriveAdapter();
+  adapter.connection = {};
+  adapter._ensureAuth = () => {};
+  adapter._withAutoRefresh = (fn) => fn();
+  adapter._resolvePathToId = async () => 'F';
+  adapter.drive = { permissions: { list: async () => { const e = new Error('denied'); e.code = 403; throw e; } } };
+  await assert.rejects(() => adapter.getPermissions('id:F'), (e) => e.code === 'ACCESS_DENIED' && /read permissions of/.test(e.message));
+});
