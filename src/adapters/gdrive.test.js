@@ -519,3 +519,70 @@ test('getPermissions: duplicate sources (file + member detail) are de-duplicated
 
 // AIFS:FILE-END (in a JS comment, the test file practices the standard:)
 // AIFS:FILE-END
+
+// ─── crossorgpath (2.11.3): drive-root fallback scoped to this org's drive ──
+
+function nonMemberResolver(globalFiles) {
+  const adapter = new GoogleDriveAdapter();
+  adapter.connection = { drive_id: 'DRIVE_A' };
+  adapter._ensureAuth = () => {};
+  adapter._detectDriveMembership = async () => false;
+  adapter._withAutoRefresh = (fn) => fn();
+  const queries = [];
+  adapter.drive = {
+    files: {
+      list: async (params) => {
+        queries.push(params);
+        if (params.corpora === 'allDrives') return { data: { files: globalFiles } };
+        return { data: { files: [] } }; // "'DRIVE_A' in parents" is empty for a non-member
+      },
+    },
+  };
+  return { adapter, queries };
+}
+
+test('resolve: single same-named match in ANOTHER drive is ignored (crossorgpath)', async () => {
+  const { adapter } = nonMemberResolver([
+    { id: 'OTHER-CORE', name: 'agent-index-core', driveId: 'DRIVE_B', parents: ['DRIVE_B'] },
+  ]);
+  assert.equal(await adapter._resolvePathToId('/agent-index-core'), null);
+  assert.equal(adapter.pathCache.get('/agent-index-core'), undefined);
+});
+
+test('resolve: in-drive match wins over same-named matches elsewhere', async () => {
+  const { adapter, queries } = nonMemberResolver([
+    { id: 'OTHER-CORE', name: 'agent-index-core', driveId: 'DRIVE_B', parents: ['DRIVE_B'] },
+    { id: 'MY-CORE', name: 'agent-index-core', driveId: 'DRIVE_A' },
+    { id: 'STRAY', name: 'agent-index-core' }, // My Drive, no driveId
+  ]);
+  assert.equal(await adapter._resolvePathToId('/agent-index-core'), 'MY-CORE');
+  const fb = queries.find((q) => q.corpora === 'allDrives');
+  assert.match(fb.fields, /driveId/);
+});
+
+test('resolve: single in-drive match with invisible parent is still accepted', async () => {
+  const { adapter } = nonMemberResolver([{ id: 'MY-CORE', name: 'agent-index-core', driveId: 'DRIVE_A' }]);
+  assert.equal(await adapter._resolvePathToId('/agent-index-core'), 'MY-CORE');
+});
+
+test('resolve: several in-drive matches tie-break on parent, else fail loud', async () => {
+  const two = [
+    { id: 'ROOT-ONE', name: 'shared', driveId: 'DRIVE_A', parents: ['DRIVE_A'] },
+    { id: 'NESTED', name: 'shared', driveId: 'DRIVE_A', parents: ['SOMEFOLDER'] },
+  ];
+  assert.equal(await nonMemberResolver(two).adapter._resolvePathToId('/shared'), 'ROOT-ONE');
+  const amb = [
+    { id: 'X1', name: 'shared', driveId: 'DRIVE_A' },
+    { id: 'X2', name: 'shared', driveId: 'DRIVE_A' },
+  ];
+  await assert.rejects(() => nonMemberResolver(amb).adapter._resolvePathToId('/shared'), /Ambiguous path segment/);
+});
+
+// ─── readencodingignored (2.11.3) ────────────────────────────────────
+
+test('read: encoding:"base64" returns base64: form even for text content', async () => {
+  const { adapter } = mockAdapter({ getImpls: [() => media('hello')] });
+  assert.equal(await adapter.read('/x.txt', { encoding: 'base64' }), 'base64:' + Buffer.from('hello').toString('base64'));
+  const { adapter: a2 } = mockAdapter({ getImpls: [() => media('hello')] });
+  assert.equal(await a2.read('/x.txt'), 'hello');
+});

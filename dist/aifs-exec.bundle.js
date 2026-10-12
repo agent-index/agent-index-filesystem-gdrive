@@ -60271,7 +60271,7 @@ var GoogleDriveAdapter = class {
     }
   }
   // ─── File Operations ─────────────────────────────────────────────────
-  async read(path) {
+  async read(path, opts = {}) {
     this._ensureAuth();
     let fileId = await this._resolvePathToId(path);
     if (!fileId) {
@@ -60317,6 +60317,9 @@ var GoogleDriveAdapter = class {
             );
           }
         }
+      }
+      if (opts && opts.encoding === "base64") {
+        return "base64:" + buffer.toString("base64");
       }
       const text = buffer.toString("utf-8");
       if (text.includes("\0")) {
@@ -60876,32 +60879,26 @@ var GoogleDriveAdapter = class {
       if (!file2 && this.connection.drive_id && currentId === this.connection.drive_id) {
         const isMember = await this._detectDriveMembership();
         if (!isMember) {
-          const fallbackRes = await this._withAutoRefresh(
-            () => this.drive.files.list({
-              supportsAllDrives: true,
-              includeItemsFromAllDrives: true,
-              corpora: "allDrives",
-              q: `name = '${segment.replace(/'/g, "\\'")}' and trashed = false`,
-              fields: "files(id, name, mimeType, parents)",
-              pageSize: 10
-            })
-          );
-          const allFallback = fallbackRes.data.files || [];
-          if (allFallback.length === 1) {
-            file2 = allFallback[0];
-          } else if (allFallback.length > 1) {
-            const parentMatched = allFallback.filter(
-              (f) => Array.isArray(f.parents) && f.parents.includes(currentId)
+          const allFallback = [];
+          let pageToken;
+          for (let page = 0; page < 5; page++) {
+            const fallbackRes = await this._withAutoRefresh(
+              () => this.drive.files.list({
+                supportsAllDrives: true,
+                includeItemsFromAllDrives: true,
+                corpora: "allDrives",
+                q: `name = '${segment.replace(/'/g, "\\'")}' and trashed = false`,
+                fields: "nextPageToken, files(id, name, mimeType, parents, driveId)",
+                pageSize: 100,
+                ...pageToken ? { pageToken } : {}
+              })
             );
-            if (parentMatched.length === 1) {
-              file2 = parentMatched[0];
-            } else {
-              const candidates = allFallback.map((f) => `${f.id} (parent ${(f.parents || []).join(",") || "n/a"})`).join("; ");
-              throw new Error(
-                `[aifs] Ambiguous path segment '${segment}': ${allFallback.length} accessible folders named '${segment}', ${parentMatched.length} under the expected parent. Candidates: ${candidates}. Resolve with an id:{folderId} anchor to disambiguate.`
-              );
-            }
+            allFallback.push(...fallbackRes.data.files || []);
+            pageToken = fallbackRes.data.nextPageToken;
+            if (!pageToken)
+              break;
           }
+          file2 = this._pickRootFallback(segment, allFallback, currentId);
         }
       }
       if (!file2) {
@@ -60912,6 +60909,42 @@ var GoogleDriveAdapter = class {
       currentPath = childPath;
     }
     return currentId;
+  }
+  /**
+   * crossorgpath (2.11.3, Dev Two live test, finding 34): choose the drive-root
+   * fallback match for a non-Drive-member. The global name search sees every
+   * drive the account can read, so a member of two orgs got the OTHER org's
+   * `agent-index-core` / `org-config.json` whenever exactly one same-named item
+   * came back (2.5.1 accepted a single match with no check at all). Only items
+   * whose `driveId` is this org's drive are candidates now; same-named items in
+   * other drives or My Drive are ignored (reported on stderr). Among in-drive
+   * candidates a single match is used as-is (its drive-root parent may be
+   * invisible to a non-member); several are tie-broken by parent == drive root,
+   * else we fail loud as before.
+   */
+  _pickRootFallback(segment, files, rootId) {
+    const driveId = this.connection.drive_id;
+    const inDrive = files.filter((f) => f && f.driveId === driveId);
+    const elsewhere = files.length - inDrive.length;
+    if (elsewhere > 0 && inDrive.length === 0) {
+      process.stderr.write(
+        `[aifs] '${segment}': ${elsewhere} same-named item(s) outside drive ${driveId} ignored; no match in this org's drive.
+`
+      );
+    }
+    if (inDrive.length === 1)
+      return inDrive[0];
+    if (inDrive.length === 0)
+      return void 0;
+    const parentMatched = inDrive.filter(
+      (f) => Array.isArray(f.parents) && f.parents.includes(rootId)
+    );
+    if (parentMatched.length === 1)
+      return parentMatched[0];
+    const candidates = inDrive.map((f) => `${f.id} (parent ${(f.parents || []).join(",") || "n/a"})`).join("; ");
+    throw new Error(
+      `[aifs] Ambiguous path segment '${segment}': ${inDrive.length} accessible items named '${segment}' in drive ${driveId}, ${parentMatched.length} under the expected parent. Candidates: ${candidates}. Resolve with an id:{folderId} anchor to disambiguate.`
+    );
   }
   /**
    * Get the root folder ID.
@@ -61921,7 +61954,8 @@ function normalizePathArgs(args) {
 var PATH_CACHE_FILENAME = "path-cache.json";
 var PATH_CACHE_MAX_AGE_MS = 30 * 60 * 1e3;
 var PATH_CACHE_MAX_ENTRIES = 2e3;
-async function loadPathCache(credentialStore) {
+var PATH_CACHE_SCHEMA = 2;
+async function loadPathCache(credentialStore, driveId) {
   const cachePath = join2(credentialStore, PATH_CACHE_FILENAME);
   try {
     const raw = await readFile3(cachePath, "utf-8");
@@ -61929,12 +61963,15 @@ async function loadPathCache(credentialStore) {
     if (data.timestamp && Date.now() - data.timestamp > PATH_CACHE_MAX_AGE_MS) {
       return /* @__PURE__ */ new Map();
     }
+    if (data.schema !== PATH_CACHE_SCHEMA || (data.drive_id || null) !== (driveId || null)) {
+      return /* @__PURE__ */ new Map();
+    }
     return new Map(Object.entries(data.entries || {}));
   } catch {
     return /* @__PURE__ */ new Map();
   }
 }
-async function savePathCache(credentialStore, pathCache) {
+async function savePathCache(credentialStore, pathCache, driveId) {
   const cachePath = join2(credentialStore, PATH_CACHE_FILENAME);
   const entries = {};
   let count = 0;
@@ -61945,6 +61982,8 @@ async function savePathCache(credentialStore, pathCache) {
     count++;
   }
   const data = {
+    schema: PATH_CACHE_SCHEMA,
+    drive_id: driveId || null,
     timestamp: Date.now(),
     entries
   };
@@ -61979,7 +62018,7 @@ async function routeToolCall(adapter, toolName, args) {
   switch (toolName) {
     case "aifs_read":
       requireArgs(toolName, args, [["path", "path"]]);
-      return adapter.read(args.path);
+      return adapter.read(args.path, { encoding: args.encoding });
     case "aifs_write": {
       requireArgs(toolName, args, [["path", "path"]]);
       let content = args.content;
@@ -62189,7 +62228,7 @@ async function main() {
     }));
     process.exit(1);
   }
-  const cachedPaths = await loadPathCache(config2.auth.credentialStore);
+  const cachedPaths = await loadPathCache(config2.auth.credentialStore, config2.connection?.drive_id);
   for (const [path, entry] of cachedPaths) {
     if (!adapter.pathCache.has(path)) {
       adapter.pathCache.set(path, entry);
@@ -62216,7 +62255,7 @@ async function main() {
     }, null, 2));
     process.exit(1);
   } finally {
-    await savePathCache(config2.auth.credentialStore, adapter.pathCache);
+    await savePathCache(config2.auth.credentialStore, adapter.pathCache, config2.connection?.drive_id);
   }
 }
 main();

@@ -633,7 +633,7 @@ export class GoogleDriveAdapter {
 
   // ─── File Operations ─────────────────────────────────────────────────
 
-  async read(path) {
+  async read(path, opts = {}) {
     this._ensureAuth();
     let fileId = await this._resolvePathToId(path);
 
@@ -694,6 +694,11 @@ export class GoogleDriveAdapter {
         }
       }
 
+      // readencodingignored (2.11.3, finding 37): an explicit encoding:"base64"
+      // request always gets the base64: form, even for content that decodes as text.
+      if (opts && opts.encoding === 'base64') {
+        return 'base64:' + buffer.toString('base64');
+      }
       // Try UTF-8; fall back to base64 for binary
       const text = buffer.toString('utf-8');
       if (text.includes('\0')) {
@@ -1445,51 +1450,27 @@ export class GoogleDriveAdapter {
       if (!file && this.connection.drive_id && currentId === this.connection.drive_id) {
         const isMember = await this._detectDriveMembership();
         if (!isMember) {
-          const fallbackRes = await this._withAutoRefresh(() =>
-            this.drive.files.list({
-              supportsAllDrives: true,
-              includeItemsFromAllDrives: true,
-              corpora: 'allDrives',
-              q: `name = '${segment.replace(/'/g, "\\'")}' and trashed = false`,
-              fields: 'files(id, name, mimeType, parents)',
-              pageSize: 10,
-            })
-          );
-          // db13 (2.5.1): disambiguate the global name search WITHOUT breaking the
-          // common single-match case. The unconstrained query matches same-named folders
-          // anywhere the user has access (e.g. /shared/{name}, strays in My Drive); picking
-          // the first silently resolved the wrong folder (bug 20260606-62a14c43-230135-db13).
-          // BUT a non-Drive-member's view of a directly-shared folder often OMITS the
-          // (inaccessible) drive-root parent from `parents`, so we must NOT parent-filter a
-          // single legitimate match away (regression: filtering-before-counting made the whole
-          // /shared tree resolve to null for non-members — caught in 2.5.1 staging). So:
-          // parent-matching is a TIE-BREAKER applied only when there is more than one candidate.
-          const allFallback = fallbackRes.data.files || [];
-          if (allFallback.length === 1) {
-            // Single accessible match — use it as-is. No parent check (parent may be invisible).
-            file = allFallback[0];
-          } else if (allFallback.length > 1) {
-            // Multiple same-named accessible folders — disambiguate by parent == drive root.
-            const parentMatched = allFallback.filter(
-              (f) => Array.isArray(f.parents) && f.parents.includes(currentId)
+          // Page through every same-named item (bounded): this org's match may not be
+          // on the first page when a generic name ("shared") exists in many drives.
+          const allFallback = [];
+          let pageToken;
+          for (let page = 0; page < 5; page++) {
+            const fallbackRes = await this._withAutoRefresh(() =>
+              this.drive.files.list({
+                supportsAllDrives: true,
+                includeItemsFromAllDrives: true,
+                corpora: 'allDrives',
+                q: `name = '${segment.replace(/'/g, "\\'")}' and trashed = false`,
+                fields: 'nextPageToken, files(id, name, mimeType, parents, driveId)',
+                pageSize: 100,
+                ...(pageToken ? { pageToken } : {}),
+              })
             );
-            if (parentMatched.length === 1) {
-              file = parentMatched[0];
-            } else {
-              // Zero or several share the expected parent (or parents aren't visible) —
-              // FAIL LOUD with the candidate list rather than guessing.
-              const candidates = allFallback
-                .map((f) => `${f.id} (parent ${(f.parents || []).join(',') || 'n/a'})`)
-                .join('; ');
-              throw new Error(
-                `[aifs] Ambiguous path segment '${segment}': ` +
-                  `${allFallback.length} accessible folders named '${segment}', ` +
-                  `${parentMatched.length} under the expected parent. ` +
-                  `Candidates: ${candidates}. Resolve with an id:{folderId} anchor to disambiguate.`
-              );
-            }
+            allFallback.push(...(fallbackRes.data.files || []));
+            pageToken = fallbackRes.data.nextPageToken;
+            if (!pageToken) break;
           }
-          // length 0 → file stays unset → not found.
+          file = this._pickRootFallback(segment, allFallback, currentId);
         }
       }
 
@@ -1502,6 +1483,45 @@ export class GoogleDriveAdapter {
     }
 
     return currentId;
+  }
+
+  /**
+   * crossorgpath (2.11.3, Dev Two live test, finding 34): choose the drive-root
+   * fallback match for a non-Drive-member. The global name search sees every
+   * drive the account can read, so a member of two orgs got the OTHER org's
+   * `agent-index-core` / `org-config.json` whenever exactly one same-named item
+   * came back (2.5.1 accepted a single match with no check at all). Only items
+   * whose `driveId` is this org's drive are candidates now; same-named items in
+   * other drives or My Drive are ignored (reported on stderr). Among in-drive
+   * candidates a single match is used as-is (its drive-root parent may be
+   * invisible to a non-member); several are tie-broken by parent == drive root,
+   * else we fail loud as before.
+   */
+  _pickRootFallback(segment, files, rootId) {
+    const driveId = this.connection.drive_id;
+    const inDrive = files.filter((f) => f && f.driveId === driveId);
+    const elsewhere = files.length - inDrive.length;
+    if (elsewhere > 0 && inDrive.length === 0) {
+      process.stderr.write(
+        `[aifs] '${segment}': ${elsewhere} same-named item(s) outside drive ${driveId} ignored; ` +
+          `no match in this org's drive.\n`
+      );
+    }
+    if (inDrive.length === 1) return inDrive[0];
+    if (inDrive.length === 0) return undefined;
+    const parentMatched = inDrive.filter(
+      (f) => Array.isArray(f.parents) && f.parents.includes(rootId)
+    );
+    if (parentMatched.length === 1) return parentMatched[0];
+    const candidates = inDrive
+      .map((f) => `${f.id} (parent ${(f.parents || []).join(',') || 'n/a'})`)
+      .join('; ');
+    throw new Error(
+      `[aifs] Ambiguous path segment '${segment}': ` +
+        `${inDrive.length} accessible items named '${segment}' in drive ${driveId}, ` +
+        `${parentMatched.length} under the expected parent. ` +
+        `Candidates: ${candidates}. Resolve with an id:{folderId} anchor to disambiguate.`
+    );
   }
 
   /**

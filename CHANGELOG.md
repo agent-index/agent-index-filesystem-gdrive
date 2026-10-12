@@ -1,5 +1,13 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.11.3] — <RELEASE_DATE> — path lookups stay in this org's drive (crossorgpath)
+
+### Fixed
+- **A member of two orgs read the other org's files (`crossorgpath`, Dev Two live test finding 34).** For an account that isn't a member of the org's Shared Drive, a top-level name that isn't found under the drive root falls back to a search across every drive the account can read. Since 2.5.1 a single result was accepted with no check, so `/agent-index-core` and `/org-config.json` resolved into another org's drive (core 3.28.1 instead of 4.0.0) and every path-read task definition came from the wrong org. The fallback now requests each item's `driveId` and only considers items in this org's drive; same-named items in other drives or My Drive are ignored (noted on stderr). A single in-drive match is still accepted when its parent is invisible; several are tie-broken by parent as before, else the lookup fails loud.
+- **The persisted path cache is drive-scoped.** `path-cache.json` now records a schema number and the drive id, and a cache from an older adapter or another drive is discarded, so wrong entries resolved by 2.11.2 and earlier don't survive the upgrade.
+- **`aifs_read` honors `encoding: "base64"`** (`readencodingignored`, finding 37). Before, base64 came back only when the content contained a NUL byte.
+- Five regression tests added (suite 36/36).
+
 ## [2.11.2] — <RELEASE_DATE> — direct grants on top of inherited access (getpermsinheritedmask)
 
 ### Fixed
