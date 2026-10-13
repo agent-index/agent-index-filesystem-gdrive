@@ -323,8 +323,10 @@ async function routeToolCall(adapter, toolName, args) {
       if (!Array.isArray(args.entries) || args.entries.length === 0) {
         throw new AifsError('INVALID_ARGS', `${toolName}: 'entries' must be a non-empty array of {path, content|content_file}`, { tool: toolName });
       }
-      // Resolve each entry's content the same three ways as aifs_write
-      // (content string, content_file local path, base64 encoding).
+      // Resolve each entry's content one of two ways: an inline `content`
+      // string or a `content_file` local path, either optionally base64
+      // (`encoding`). Unlike aifs_write, entries do not accept
+      // `content_stdin`: stdin is one stream and cannot carry many entries.
       const resolved = [];
       for (let i = 0; i < args.entries.length; i++) {
         const e = args.entries[i];
@@ -383,9 +385,37 @@ async function main() {
         'aifs_write_batch',
         'aifs_stat_batch',
       ],
+      // Argument signatures, kept in step with routeToolCall above.
+      // "?" = optional. Unknown arguments are ignored without an error.
+      arguments: {
+        aifs_read: '{path}',
+        aifs_write: '{path, content | content_file | content_stdin, encoding?, if_revision?}',
+        aifs_list: '{path, recursive?}',
+        aifs_exists: '{path}',
+        aifs_stat: '{path}',
+        aifs_delete: '{path}',
+        aifs_copy: '{source, destination}',
+        aifs_auth_status: '{}',
+        aifs_authenticate: '{action?: "start"|"complete", auth_code?}',
+        aifs_share: '{path, subject, role, inherit?}',
+        aifs_unshare: '{path, subject}',
+        aifs_get_permissions: '{path, include_inherited?}',
+        aifs_search: '{scope, name_contains?, type?: "file"|"folder"|"any", max_results?}',
+        aifs_transfer_ownership: '{path, new_owner}',
+        aifs_write_batch: '{entries: [{path, content | content_file, encoding?}]}',
+        aifs_stat_batch: '{paths: [...]}',
+      },
+      notes: [
+        'aifs_write: give exactly one of content, content_file, content_stdin. Inline content is bounded by the OS argument limit (~128 KiB); content_file and content_stdin have no size limit. If more than one is given, content wins, then content_file, then content_stdin.',
+        'encoding "base64": a content_file/content_stdin payload is taken as raw bytes (use for binary files; otherwise it is read as UTF-8). An inline content string must itself be base64.',
+        'if_revision: revision from aifs_stat; the write fails with REVISION_CONFLICT if the file has changed since.',
+        'aifs_search: without name_contains nothing is filtered — an arbitrary, unordered page of up to max_results (default 100, max 1000) items under scope.',
+      ],
       examples: [
         'aifs-exec aifs_read \'{"path":"/projects/foo/project.md"}\'',
         'aifs-exec aifs_list \'{"path":"/shared/projects"}\'',
+        'aifs-exec aifs_write \'{"path":"/shared/foo/big.json","content_file":"/tmp/big.json"}\'',
+        'aifs-exec aifs_search \'{"scope":"/shared","name_contains":"proposal","type":"file"}\'',
         'aifs-exec aifs_auth_status',
       ],
     }, null, 2));

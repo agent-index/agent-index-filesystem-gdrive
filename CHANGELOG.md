@@ -8,6 +8,13 @@
 - **A refused permissions read names the read** (`permsverb`, finding 47). A reader's `aifs_get_permissions` said "Permission denied to share"; it now says "read permissions of". Unshare and transfer name their own operations too.
 - Five regression tests added (suite 41/41).
 
+### Also in 2.11.4 — `--help` documents every tool and argument (merged from main, gdrive#1; bugs `f848`, `e428`)
+- **`--help` lists all 16 tools with their arguments** (it listed 9 tools and no arguments). `src/aifs-exec.sh` gives each tool's JSON argument signature, the three `aifs_write` content sources (`content`, `content_file`, `content_stdin`) with their limits and precedence, what `encoding: "base64"` means, `if_revision`, and that unknown arguments are ignored; the executor's JSON `--help` (`src/exec.mjs`) gains an `arguments` map and `notes`. No behaviour change.
+- **README** counts 16 `aifs_*` tools (9 core, 5 access-control, 2 batch).
+- **`adapter.json`: `write_supports_content_file` and `write_supports_content_stdin`** (both `true`), so a consumer can detect support (`aifs_write` has accepted both since 2.6.0).
+- The `aifs_write_batch` comment in `src/exec.mjs` now says batch entries accept `content` and `content_file` only.
+- Removed `dist/test_write.tmp`, an empty file committed by mistake.
+
 ## [2.11.3] — <RELEASE_DATE> — path lookups stay in this org's drive (crossorgpath)
 
 ### Fixed
