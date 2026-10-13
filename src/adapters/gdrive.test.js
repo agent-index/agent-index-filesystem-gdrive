@@ -440,5 +440,229 @@ test('getPermissions: Shared-Drive item has no owner (organizer → writer, unch
   assert.equal(permissions[0].role, 'writer'); // organizer still collapses to writer
 });
 
+
+// ─── getPermissions: direct grant layered on inherited access (getpermsinheritedmask) ───
+// Drive returns ONE permission per principal with permissionDetails[] listing each
+// source. A direct writer on top of an inherited reader must surface as TWO entries.
+
+test('getPermissions: direct writer + inherited reader on the same principal → two entries', async () => {
+  const adapter = permsAdapter(
+    [{
+      id: 'g1', emailAddress: 'all@x', type: 'group', role: 'writer',
+      permissionDetails: [
+        { permissionType: 'file', role: 'reader', inherited: true, inheritedFrom: 'SHARED-ID' },
+        { permissionType: 'file', role: 'writer', inherited: false },
+      ],
+    }],
+    { drive_id: 'DRIVE1' }
+  );
+  adapter.pathCache = new Map([['/shared', { id: 'SHARED-ID' }]]);
+  const { permissions } = await adapter.getPermissions('/shared/projects/');
+  const direct = permissions.find((p) => p.inherited_from === null);
+  const inh = permissions.find((p) => p.inherited_from !== null);
+  assert.ok(direct, 'the direct grant must be reported');
+  assert.equal(direct.role, 'writer');
+  assert.equal(direct.subject, 'all@x');
+  assert.ok(inh, 'the inherited grant must still be reported');
+  assert.equal(inh.role, 'reader');
+  assert.equal(inh.inherited_from, '/shared');
+});
+
+test('getPermissions: includeInherited:false keeps the direct grant of a mixed permission', async () => {
+  const adapter = permsAdapter(
+    [{
+      id: 'g1', emailAddress: 'all@x', type: 'group', role: 'writer',
+      permissionDetails: [
+        { permissionType: 'file', role: 'reader', inherited: true, inheritedFrom: 'SHARED-ID' },
+        { permissionType: 'file', role: 'writer', inherited: false },
+      ],
+    }],
+    { drive_id: 'DRIVE1' }
+  );
+  const { permissions } = await adapter.getPermissions('/x/', { includeInherited: false });
+  assert.equal(permissions.length, 1);
+  assert.equal(permissions[0].role, 'writer');
+  assert.equal(permissions[0].inherited_from, null);
+});
+
+test('getPermissions: purely inherited permission → one inherited entry (unchanged)', async () => {
+  const adapter = permsAdapter(
+    [{
+      id: 'g1', emailAddress: 'all@x', type: 'group', role: 'reader',
+      permissionDetails: [{ permissionType: 'file', role: 'reader', inherited: true, inheritedFrom: 'SHARED-ID' }],
+    }],
+    { drive_id: 'DRIVE1' }
+  );
+  const { permissions } = await adapter.getPermissions('/x/');
+  assert.equal(permissions.length, 1);
+  assert.equal(permissions[0].role, 'reader');
+  assert.ok(permissions[0].inherited_from);
+  const none = await adapter.getPermissions('/x/', { includeInherited: false });
+  assert.equal(none.permissions.length, 0);
+});
+
+test('getPermissions: duplicate sources (file + member detail) are de-duplicated', async () => {
+  const adapter = permsAdapter(
+    [{
+      id: 'u1', emailAddress: 'mgr@x', type: 'user', role: 'organizer',
+      permissionDetails: [
+        { permissionType: 'member', role: 'organizer', inherited: true, inheritedFrom: 'DRIVE1' },
+        { permissionType: 'file', role: 'organizer', inherited: true, inheritedFrom: 'DRIVE1' },
+      ],
+    }],
+    { drive_id: 'DRIVE1' }
+  );
+  const { permissions } = await adapter.getPermissions('/x/');
+  assert.equal(permissions.length, 1);
+  assert.equal(permissions[0].role, 'writer');
+});
+
 // AIFS:FILE-END (in a JS comment, the test file practices the standard:)
 // AIFS:FILE-END
+
+// ─── crossorgpath (2.11.3): drive-root fallback scoped to this org's drive ──
+
+function nonMemberResolver(globalFiles) {
+  const adapter = new GoogleDriveAdapter();
+  adapter.connection = { drive_id: 'DRIVE_A' };
+  adapter._ensureAuth = () => {};
+  adapter._detectDriveMembership = async () => false;
+  adapter._withAutoRefresh = (fn) => fn();
+  const queries = [];
+  adapter.drive = {
+    files: {
+      list: async (params) => {
+        queries.push(params);
+        if (params.corpora === 'allDrives') return { data: { files: globalFiles } };
+        return { data: { files: [] } }; // "'DRIVE_A' in parents" is empty for a non-member
+      },
+    },
+  };
+  return { adapter, queries };
+}
+
+test('resolve: single same-named match in ANOTHER drive is ignored (crossorgpath)', async () => {
+  const { adapter } = nonMemberResolver([
+    { id: 'OTHER-CORE', name: 'agent-index-core', driveId: 'DRIVE_B', parents: ['DRIVE_B'] },
+  ]);
+  assert.equal(await adapter._resolvePathToId('/agent-index-core'), null);
+  assert.equal(adapter.pathCache.get('/agent-index-core'), undefined);
+});
+
+test('resolve: in-drive match wins over same-named matches elsewhere', async () => {
+  const { adapter, queries } = nonMemberResolver([
+    { id: 'OTHER-CORE', name: 'agent-index-core', driveId: 'DRIVE_B', parents: ['DRIVE_B'] },
+    { id: 'MY-CORE', name: 'agent-index-core', driveId: 'DRIVE_A' },
+    { id: 'STRAY', name: 'agent-index-core' }, // My Drive, no driveId
+  ]);
+  assert.equal(await adapter._resolvePathToId('/agent-index-core'), 'MY-CORE');
+  const fb = queries.find((q) => q.corpora === 'allDrives');
+  assert.match(fb.fields, /driveId/);
+});
+
+test('resolve: single in-drive match with invisible parent is still accepted', async () => {
+  const { adapter } = nonMemberResolver([{ id: 'MY-CORE', name: 'agent-index-core', driveId: 'DRIVE_A' }]);
+  assert.equal(await adapter._resolvePathToId('/agent-index-core'), 'MY-CORE');
+});
+
+test('resolve: several in-drive matches tie-break on parent, else fail loud', async () => {
+  const two = [
+    { id: 'ROOT-ONE', name: 'shared', driveId: 'DRIVE_A', parents: ['DRIVE_A'] },
+    { id: 'NESTED', name: 'shared', driveId: 'DRIVE_A', parents: ['SOMEFOLDER'] },
+  ];
+  assert.equal(await nonMemberResolver(two).adapter._resolvePathToId('/shared'), 'ROOT-ONE');
+  const amb = [
+    { id: 'X1', name: 'shared', driveId: 'DRIVE_A' },
+    { id: 'X2', name: 'shared', driveId: 'DRIVE_A' },
+  ];
+  await assert.rejects(() => nonMemberResolver(amb).adapter._resolvePathToId('/shared'), /Ambiguous path segment/);
+});
+
+// ─── readencodingignored (2.11.3) ────────────────────────────────────
+
+test('read: encoding:"base64" returns base64: form even for text content', async () => {
+  const { adapter } = mockAdapter({ getImpls: [() => media('hello')] });
+  assert.equal(await adapter.read('/x.txt', { encoding: 'base64' }), 'base64:' + Buffer.from('hello').toString('base64'));
+  const { adapter: a2 } = mockAdapter({ getImpls: [() => media('hello')] });
+  assert.equal(await a2.read('/x.txt'), 'hello');
+});
+
+// ─── xferitemdrive (2.11.4): ownership transfer decided by the item's drive ──
+
+function xferAdapter({ itemDriveId = undefined, mimeType = 'application/vnd.google-apps.folder', children = {}, failIds = [] } = {}) {
+  const adapter = new GoogleDriveAdapter();
+  adapter.connection = { drive_id: 'ORG_DRIVE' }; // a Shared-Drive org
+  adapter._ensureAuth = () => {};
+  adapter._withAutoRefresh = (fn) => fn();
+  adapter._resolvePathToId = async () => 'ROOT';
+  const created = [];
+  adapter.drive = {
+    files: {
+      get: async () => ({ data: { id: 'ROOT', mimeType, driveId: itemDriveId } }),
+      list: async (p) => {
+        const parent = /'([^']+)' in parents/.exec(p.q)[1];
+        return { data: { files: children[parent] || [] } };
+      },
+    },
+    permissions: {
+      create: async (p) => {
+        if (failIds.includes(p.fileId)) { const e = new Error('nope'); e.code = 500; throw e; }
+        created.push(p.fileId);
+        return { data: {} };
+      },
+    },
+  };
+  return { adapter, created };
+}
+
+test('transferOwnership: My-Drive folder on a Shared-Drive org transfers folder + owned contents', async () => {
+  const { adapter, created } = xferAdapter({
+    children: {
+      ROOT: [
+        { id: 'DOC', mimeType: 'text/markdown', ownedByMe: true },
+        { id: 'META', mimeType: 'application/json', ownedByMe: true },
+        { id: 'ASSETS', mimeType: 'application/vnd.google-apps.folder', ownedByMe: true },
+        { id: 'NOTMINE', mimeType: 'text/plain', ownedByMe: false },
+      ],
+      ASSETS: [{ id: 'IMG', mimeType: 'image/png', ownedByMe: true }],
+    },
+  });
+  const r = await adapter.transferOwnership('id:ROOT', 'new@x.com');
+  assert.deepEqual(created, ['ROOT', 'DOC', 'META', 'ASSETS', 'IMG']);
+  assert.equal(r.items, 5);
+  assert.equal(r.partial, undefined);
+});
+
+test('transferOwnership: an item inside a Shared Drive is NOT_IMPLEMENTED', async () => {
+  const { adapter, created } = xferAdapter({ itemDriveId: 'ORG_DRIVE' });
+  await assert.rejects(() => adapter.transferOwnership('id:ROOT', 'new@x.com'), (e) => e.code === 'NOT_IMPLEMENTED');
+  assert.deepEqual(created, []);
+});
+
+test('transferOwnership: a failing child is reported, the item itself still transfers', async () => {
+  const { adapter } = xferAdapter({
+    children: { ROOT: [{ id: 'DOC', mimeType: 'text/markdown', ownedByMe: true }] },
+    failIds: ['DOC'],
+  });
+  const r = await adapter.transferOwnership('id:ROOT', 'new@x.com');
+  assert.equal(r.partial, true);
+  assert.equal(r.failed_items[0].id, 'DOC');
+});
+
+test('stat: returns drive_id (null for My Drive)', async () => {
+  const { adapter } = mockAdapter({ getImpls: [() => ({ data: { size: '3', driveId: 'SD1' } }), () => ({ data: { size: '3' } })] });
+  adapter.connection = { drive_id: 'SD1' };
+  adapter._withAutoRefresh = (fn) => fn();
+  assert.equal((await adapter.stat('/a')).drive_id, 'SD1');
+  assert.equal((await adapter.stat('/b')).drive_id, null);
+});
+
+test('getPermissions: a 403 names the read, not "share" (permsverb)', async () => {
+  const adapter = new GoogleDriveAdapter();
+  adapter.connection = {};
+  adapter._ensureAuth = () => {};
+  adapter._withAutoRefresh = (fn) => fn();
+  adapter._resolvePathToId = async () => 'F';
+  adapter.drive = { permissions: { list: async () => { const e = new Error('denied'); e.code = 403; throw e; } } };
+  await assert.rejects(() => adapter.getPermissions('id:F'), (e) => e.code === 'ACCESS_DENIED' && /read permissions of/.test(e.message));
+});

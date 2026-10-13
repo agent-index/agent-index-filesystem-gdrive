@@ -633,7 +633,7 @@ export class GoogleDriveAdapter {
 
   // ─── File Operations ─────────────────────────────────────────────────
 
-  async read(path) {
+  async read(path, opts = {}) {
     this._ensureAuth();
     let fileId = await this._resolvePathToId(path);
 
@@ -694,6 +694,11 @@ export class GoogleDriveAdapter {
         }
       }
 
+      // readencodingignored (2.11.3, finding 37): an explicit encoding:"base64"
+      // request always gets the base64: form, even for content that decodes as text.
+      if (opts && opts.encoding === 'base64') {
+        return 'base64:' + buffer.toString('base64');
+      }
       // Try UTF-8; fall back to base64 for binary
       const text = buffer.toString('utf-8');
       if (text.includes('\0')) {
@@ -1169,7 +1174,7 @@ export class GoogleDriveAdapter {
     try {
       const params = {
         fileId,
-        fields: 'size, modifiedTime, createdTime, headRevisionId, webViewLink',
+        fields: 'size, modifiedTime, createdTime, headRevisionId, webViewLink, driveId',
       };
       if (this.connection.drive_id) {
         params.supportsAllDrives = true;
@@ -1189,6 +1194,10 @@ export class GoogleDriveAdapter {
         // invite-member can build a clickable bootstrap link in the welcome email
         // (C.1.3.3 bootstraplinkunavailable). gdrive ids are global, so no drive_id is needed.
         web_url: res.data.webViewLink || null,
+        // statdriveid (2.11.4, finding 39): the Shared Drive the item lives in, or
+        // null for My Drive. Pointers record it as item_drive_id, and member-bootstrap
+        // uses it to tell a member's own space from a Shared-Drive folder.
+        drive_id: res.data.driveId || null,
       };
     } catch (err) {
       this._handleDriveError(err, path);
@@ -1445,51 +1454,27 @@ export class GoogleDriveAdapter {
       if (!file && this.connection.drive_id && currentId === this.connection.drive_id) {
         const isMember = await this._detectDriveMembership();
         if (!isMember) {
-          const fallbackRes = await this._withAutoRefresh(() =>
-            this.drive.files.list({
-              supportsAllDrives: true,
-              includeItemsFromAllDrives: true,
-              corpora: 'allDrives',
-              q: `name = '${segment.replace(/'/g, "\\'")}' and trashed = false`,
-              fields: 'files(id, name, mimeType, parents)',
-              pageSize: 10,
-            })
-          );
-          // db13 (2.5.1): disambiguate the global name search WITHOUT breaking the
-          // common single-match case. The unconstrained query matches same-named folders
-          // anywhere the user has access (e.g. /shared/{name}, strays in My Drive); picking
-          // the first silently resolved the wrong folder (bug 20260606-62a14c43-230135-db13).
-          // BUT a non-Drive-member's view of a directly-shared folder often OMITS the
-          // (inaccessible) drive-root parent from `parents`, so we must NOT parent-filter a
-          // single legitimate match away (regression: filtering-before-counting made the whole
-          // /shared tree resolve to null for non-members — caught in 2.5.1 staging). So:
-          // parent-matching is a TIE-BREAKER applied only when there is more than one candidate.
-          const allFallback = fallbackRes.data.files || [];
-          if (allFallback.length === 1) {
-            // Single accessible match — use it as-is. No parent check (parent may be invisible).
-            file = allFallback[0];
-          } else if (allFallback.length > 1) {
-            // Multiple same-named accessible folders — disambiguate by parent == drive root.
-            const parentMatched = allFallback.filter(
-              (f) => Array.isArray(f.parents) && f.parents.includes(currentId)
+          // Page through every same-named item (bounded): this org's match may not be
+          // on the first page when a generic name ("shared") exists in many drives.
+          const allFallback = [];
+          let pageToken;
+          for (let page = 0; page < 5; page++) {
+            const fallbackRes = await this._withAutoRefresh(() =>
+              this.drive.files.list({
+                supportsAllDrives: true,
+                includeItemsFromAllDrives: true,
+                corpora: 'allDrives',
+                q: `name = '${segment.replace(/'/g, "\\'")}' and trashed = false`,
+                fields: 'nextPageToken, files(id, name, mimeType, parents, driveId)',
+                pageSize: 100,
+                ...(pageToken ? { pageToken } : {}),
+              })
             );
-            if (parentMatched.length === 1) {
-              file = parentMatched[0];
-            } else {
-              // Zero or several share the expected parent (or parents aren't visible) —
-              // FAIL LOUD with the candidate list rather than guessing.
-              const candidates = allFallback
-                .map((f) => `${f.id} (parent ${(f.parents || []).join(',') || 'n/a'})`)
-                .join('; ');
-              throw new Error(
-                `[aifs] Ambiguous path segment '${segment}': ` +
-                  `${allFallback.length} accessible folders named '${segment}', ` +
-                  `${parentMatched.length} under the expected parent. ` +
-                  `Candidates: ${candidates}. Resolve with an id:{folderId} anchor to disambiguate.`
-              );
-            }
+            allFallback.push(...(fallbackRes.data.files || []));
+            pageToken = fallbackRes.data.nextPageToken;
+            if (!pageToken) break;
           }
-          // length 0 → file stays unset → not found.
+          file = this._pickRootFallback(segment, allFallback, currentId);
         }
       }
 
@@ -1502,6 +1487,45 @@ export class GoogleDriveAdapter {
     }
 
     return currentId;
+  }
+
+  /**
+   * crossorgpath (2.11.3, Dev Two live test, finding 34): choose the drive-root
+   * fallback match for a non-Drive-member. The global name search sees every
+   * drive the account can read, so a member of two orgs got the OTHER org's
+   * `agent-index-core` / `org-config.json` whenever exactly one same-named item
+   * came back (2.5.1 accepted a single match with no check at all). Only items
+   * whose `driveId` is this org's drive are candidates now; same-named items in
+   * other drives or My Drive are ignored (reported on stderr). Among in-drive
+   * candidates a single match is used as-is (its drive-root parent may be
+   * invisible to a non-member); several are tie-broken by parent == drive root,
+   * else we fail loud as before.
+   */
+  _pickRootFallback(segment, files, rootId) {
+    const driveId = this.connection.drive_id;
+    const inDrive = files.filter((f) => f && f.driveId === driveId);
+    const elsewhere = files.length - inDrive.length;
+    if (elsewhere > 0 && inDrive.length === 0) {
+      process.stderr.write(
+        `[aifs] '${segment}': ${elsewhere} same-named item(s) outside drive ${driveId} ignored; ` +
+          `no match in this org's drive.\n`
+      );
+    }
+    if (inDrive.length === 1) return inDrive[0];
+    if (inDrive.length === 0) return undefined;
+    const parentMatched = inDrive.filter(
+      (f) => Array.isArray(f.parents) && f.parents.includes(rootId)
+    );
+    if (parentMatched.length === 1) return parentMatched[0];
+    const candidates = inDrive
+      .map((f) => `${f.id} (parent ${(f.parents || []).join(',') || 'n/a'})`)
+      .join('; ');
+    throw new Error(
+      `[aifs] Ambiguous path segment '${segment}': ` +
+        `${inDrive.length} accessible items named '${segment}' in drive ${driveId}, ` +
+        `${parentMatched.length} under the expected parent. ` +
+        `Candidates: ${candidates}. Resolve with an id:{folderId} anchor to disambiguate.`
+    );
   }
 
   /**
@@ -2290,7 +2314,7 @@ export class GoogleDriveAdapter {
       );
       permissions = res?.data?.permissions || [];
     } catch (err) {
-      this._handlePermissionError(err, path, subject, null);
+      this._handlePermissionError(err, path, subject, null, 'unshare');
     }
 
     const subjectLower = subject.toLowerCase();
@@ -2313,7 +2337,7 @@ export class GoogleDriveAdapter {
         this.drive.permissions.delete(deleteParams)
       );
     } catch (err) {
-      this._handlePermissionError(err, path, subject, null);
+      this._handlePermissionError(err, path, subject, null, 'unshare');
     }
 
     return { unshared: true, path };
@@ -2409,40 +2433,57 @@ export class GoogleDriveAdapter {
         pageToken = res?.data?.nextPageToken;
       } while (pageToken);
     } catch (err) {
-      this._handlePermissionError(err, path, null, null);
+      this._handlePermissionError(err, path, null, null, 'read permissions of');
     }
 
     const result = [];
     for (const p of all) {
-      // Determine inheritance. permissionDetails is an array (one entry
-      // per inheritance source); we use the first as the canonical source.
-      const detail = (p.permissionDetails && p.permissionDetails[0]) || null;
-      const isInherited = detail?.inherited === true;
-
-      if (!includeInherited && isInherited) continue;
-
-      let inheritedFrom = null;
-      if (isInherited && detail?.inheritedFrom) {
-        const resolved = this._idToPath(detail.inheritedFrom);
-        inheritedFrom = resolved !== null ? resolved : `gdrive-id:${detail.inheritedFrom}`;
+      // bug getpermsinheritedmask (3.32.0 live test): Drive returns ONE permission
+      // per principal per file, with permissionDetails[] listing every SOURCE of
+      // that principal's access (e.g. reader inherited from /shared AND a direct
+      // writer on this folder). Pre-2.12.0 we took permissionDetails[0] only, so a
+      // direct grant layered on an inherited one was reported as inherited —
+      // the core permission-changes procedure then marked applied writer grants
+      // verify_mismatch, and could not plan an unshare of a direct grant that
+      // co-exists with inherited access. Emit one entry per distinct source.
+      const subject = p.emailAddress || (p.type === 'anyone' ? '*' : p.type);
+      // bug getpermsownerwriter: the true owner of a My-Drive item is identified
+      // by the permission's own role === 'owner' (never via a nonexistent field).
+      const mapRole = (r) => (r === 'owner' ? 'owner' : this._driveRoleToAifsRole(r));
+      const details = Array.isArray(p.permissionDetails) ? p.permissionDetails : [];
+      const sources = [];
+      if (details.length === 0) {
+        // No details (personal Drive): a single explicit grant.
+        sources.push({ role: mapRole(p.role), inheritedFrom: null, inherited: false });
+      } else {
+        for (const d of details) {
+          const inherited = d?.inherited === true;
+          let inheritedFrom = null;
+          if (inherited) {
+            if (d.inheritedFrom) {
+              const resolved = this._idToPath(d.inheritedFrom);
+              inheritedFrom = resolved !== null ? resolved : `gdrive-id:${d.inheritedFrom}`;
+            } else {
+              inheritedFrom = 'gdrive-id:unknown';
+            }
+          }
+          sources.push({ role: mapRole(d?.role || p.role), inheritedFrom, inherited });
+        }
       }
-
-      // bug getpermsownerwriter: identify the true owner of a My-Drive item
-      // from the Drive permission's own role === 'owner' (the only valid
-      // signal — the permission resource has no `owner` boolean; see
-      // getpermsinvalidownerfield). Everything else maps through
-      // _driveRoleToAifsRole unchanged.
-      const role = p.role === 'owner'
-        ? 'owner'
-        : this._driveRoleToAifsRole(p.role);
-
-      result.push({
-        subject: p.emailAddress || (p.type === 'anyone' ? '*' : p.type),
-        role,
-        permission_id: p.id || null,
-        inherited_from: inheritedFrom,
-        granted_date: null, // Drive Permission resource has no creationTime
-      });
+      const seen = new Set();
+      for (const src of sources) {
+        if (!includeInherited && src.inherited) continue;
+        const key = `${src.role}|${src.inheritedFrom}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        result.push({
+          subject,
+          role: src.role,
+          permission_id: p.id || null,
+          inherited_from: src.inheritedFrom,
+          granted_date: null, // Drive Permission resource has no creationTime
+        });
+      }
     }
 
     return { permissions: result };
@@ -2594,21 +2635,92 @@ export class GoogleDriveAdapter {
       throw new InvalidRecipientError(newOwner, 'must be an email address');
     }
 
-    if (this.connection.drive_id) {
-      // Shared Drive — ownership is the drive's, not the user's. The
-      // op semantically doesn't apply, so we surface NOT_IMPLEMENTED
-      // honestly rather than silently doing nothing.
-      throw new NotImplementedError(
-        'transferOwnership',
-        'Shared Drive — ownership belongs to the drive, not individual users. Manage drive membership at the Workspace level instead.'
-      );
-    }
-
     const fileId = await this._resolvePathToId(path);
     if (!fileId) {
       throw new PathNotFoundError(path);
     }
 
+    // xferitemdrive (2.11.4, finding 48): decide by where the ITEM lives, not by
+    // whether the org uses a Shared Drive. 2.11.3 refused every transfer on a
+    // Shared-Drive org, so a private library doc in the member's own My Drive
+    // could never change owner. An item inside a Shared Drive is owned by the
+    // drive, so the op doesn't apply there.
+    let meta;
+    try {
+      meta = await this._withAutoRefresh(() =>
+        this.drive.files.get({ fileId, fields: 'id, mimeType, driveId', supportsAllDrives: true })
+      );
+    } catch (err) {
+      this._handleDriveError(err, path);
+    }
+    if (meta?.data?.driveId) {
+      throw new NotImplementedError(
+        'transferOwnership',
+        'Shared Drive item — ownership belongs to the drive, not individual users. Manage drive membership at the Workspace level instead.'
+      );
+    }
+
+    // A folder's ownership doesn't carry its contents with it, so transfer the
+    // folder and then every descendant the caller owns (a library doc folder's
+    // doc.md, meta.json, assets/*).
+    const targets = [fileId];
+    if (meta?.data?.mimeType === 'application/vnd.google-apps.folder') {
+      try {
+        targets.push(...(await this._ownedDescendants(fileId)));
+      } catch (err) {
+        this._handleDriveError(err, path);
+      }
+    }
+
+    const failed = [];
+    for (const id of targets) {
+      try {
+        await this._transferOne(id, newOwner, id === fileId ? path : `id:${id}`);
+      } catch (err) {
+        if (id === fileId) throw err; // the item itself must transfer
+        failed.push({ id, error: err?.message || String(err) });
+      }
+    }
+
+    return {
+      transferred: true,
+      path,
+      new_owner: newOwner,
+      items: targets.length,
+      ...(failed.length ? { partial: true, failed_items: failed } : {}),
+    };
+  }
+
+  /** IDs of every non-trashed descendant of folderId that the caller owns. */
+  async _ownedDescendants(folderId) {
+    const out = [];
+    const queue = [folderId];
+    while (queue.length) {
+      const parent = queue.shift();
+      let pageToken;
+      do {
+        const res = await this._withAutoRefresh(() =>
+          this.drive.files.list({
+            q: `'${parent}' in parents and trashed = false`,
+            fields: 'nextPageToken, files(id, mimeType, ownedByMe)',
+            pageSize: 200,
+            supportsAllDrives: true,
+            includeItemsFromAllDrives: true,
+            ...(pageToken ? { pageToken } : {}),
+          })
+        );
+        for (const f of res?.data?.files || []) {
+          if (f.ownedByMe) out.push(f.id);
+          if (f.mimeType === 'application/vnd.google-apps.folder') queue.push(f.id);
+        }
+        pageToken = res?.data?.nextPageToken;
+      } while (pageToken);
+    }
+    return out;
+  }
+
+  /** One permissions.create(role owner) call, with the error mapping below. */
+  async _transferOne(fileId, newOwner, path = `id:${fileId}`) {
     const params = {
       fileId,
       requestBody: {
@@ -2649,10 +2761,8 @@ export class GoogleDriveAdapter {
         );
       }
       // Generic permission error path otherwise.
-      this._handlePermissionError(err, path, newOwner, 'owner');
+      this._handlePermissionError(err, path, newOwner, 'owner', 'transfer ownership of');
     }
-
-    return { transferred: true, path, new_owner: newOwner };
   }
 
   /**
@@ -2660,7 +2770,7 @@ export class GoogleDriveAdapter {
    * errors have richer semantics than file ops so they get their own
    * mapper rather than reusing _handleDriveError.
    */
-  _handlePermissionError(err, path, subject, role) {
+  _handlePermissionError(err, path, subject, role, action = 'share') {
     const status = err.code || err.response?.status;
     const message = err?.errors?.[0]?.message || err?.message || '';
 
@@ -2668,7 +2778,9 @@ export class GoogleDriveAdapter {
       case 401:
         throw new NotAuthenticatedError('expired');
       case 403:
-        throw new AccessDeniedError(path, 'share');
+        // permsverb (2.11.4, finding 47): name the operation that was refused —
+        // a reader's getPermissions said "Permission denied to share".
+        throw new AccessDeniedError(path, action);
       case 404:
         throw new PathNotFoundError(path);
       case 400:

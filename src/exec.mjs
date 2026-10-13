@@ -74,12 +74,13 @@ function normalizePathArgs(args) {
 const PATH_CACHE_FILENAME = 'path-cache.json';
 const PATH_CACHE_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 const PATH_CACHE_MAX_ENTRIES = 2000;
+const PATH_CACHE_SCHEMA = 2; // 2.11.3: drive-scoped entries (crossorgpath)
 
 /**
  * Load the persisted path cache from disk.
  * Returns a Map of normalized path → { id, mimeType }.
  */
-async function loadPathCache(credentialStore) {
+async function loadPathCache(credentialStore, driveId) {
   const cachePath = join(credentialStore, PATH_CACHE_FILENAME);
   try {
     const raw = await readFile(cachePath, 'utf-8');
@@ -87,6 +88,13 @@ async function loadPathCache(credentialStore) {
 
     // Check if cache is too old
     if (data.timestamp && (Date.now() - data.timestamp) > PATH_CACHE_MAX_AGE_MS) {
+      return new Map();
+    }
+
+    // crossorgpath (2.11.3, finding 34): a cache written by an older adapter may
+    // hold drive-root entries resolved into ANOTHER org's drive. Only trust a cache
+    // that carries this schema and was written for this drive.
+    if (data.schema !== PATH_CACHE_SCHEMA || (data.drive_id || null) !== (driveId || null)) {
       return new Map();
     }
 
@@ -100,7 +108,7 @@ async function loadPathCache(credentialStore) {
  * Persist the path cache to disk.
  * Prunes to MAX_ENTRIES if needed.
  */
-async function savePathCache(credentialStore, pathCache) {
+async function savePathCache(credentialStore, pathCache, driveId) {
   const cachePath = join(credentialStore, PATH_CACHE_FILENAME);
   const entries = {};
   let count = 0;
@@ -112,6 +120,8 @@ async function savePathCache(credentialStore, pathCache) {
   }
 
   const data = {
+    schema: PATH_CACHE_SCHEMA,
+    drive_id: driveId || null,
     timestamp: Date.now(),
     entries,
   };
@@ -163,7 +173,7 @@ async function routeToolCall(adapter, toolName, args) {
   switch (toolName) {
     case 'aifs_read':
       requireArgs(toolName, args, [['path', 'path']]);
-      return adapter.read(args.path);
+      return adapter.read(args.path, { encoding: args.encoding });
 
     case 'aifs_write': {
       // content may arrive three ways (2.6.0 — closes bug 20260608-…-clicap;
@@ -470,7 +480,7 @@ async function main() {
   }
 
   // Load persisted path cache into adapter
-  const cachedPaths = await loadPathCache(config.auth.credentialStore);
+  const cachedPaths = await loadPathCache(config.auth.credentialStore, config.connection?.drive_id);
   for (const [path, entry] of cachedPaths) {
     if (!adapter.pathCache.has(path)) {
       adapter.pathCache.set(path, entry);
@@ -507,7 +517,7 @@ async function main() {
   } finally {
     // Always persist the path cache, even on error — partial resolution
     // results are still valuable for the next call
-    await savePathCache(config.auth.credentialStore, adapter.pathCache);
+    await savePathCache(config.auth.credentialStore, adapter.pathCache, config.connection?.drive_id);
   }
 }
 

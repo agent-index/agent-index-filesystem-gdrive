@@ -60271,7 +60271,7 @@ var GoogleDriveAdapter = class {
     }
   }
   // ─── File Operations ─────────────────────────────────────────────────
-  async read(path) {
+  async read(path, opts = {}) {
     this._ensureAuth();
     let fileId = await this._resolvePathToId(path);
     if (!fileId) {
@@ -60317,6 +60317,9 @@ var GoogleDriveAdapter = class {
             );
           }
         }
+      }
+      if (opts && opts.encoding === "base64") {
+        return "base64:" + buffer.toString("base64");
       }
       const text = buffer.toString("utf-8");
       if (text.includes("\0")) {
@@ -60683,7 +60686,7 @@ var GoogleDriveAdapter = class {
     try {
       const params = {
         fileId,
-        fields: "size, modifiedTime, createdTime, headRevisionId, webViewLink"
+        fields: "size, modifiedTime, createdTime, headRevisionId, webViewLink, driveId"
       };
       if (this.connection.drive_id) {
         params.supportsAllDrives = true;
@@ -60700,7 +60703,11 @@ var GoogleDriveAdapter = class {
         // Browser-openable URL (Drive webViewLink) — parity with the onedrive adapter so
         // invite-member can build a clickable bootstrap link in the welcome email
         // (C.1.3.3 bootstraplinkunavailable). gdrive ids are global, so no drive_id is needed.
-        web_url: res.data.webViewLink || null
+        web_url: res.data.webViewLink || null,
+        // statdriveid (2.11.4, finding 39): the Shared Drive the item lives in, or
+        // null for My Drive. Pointers record it as item_drive_id, and member-bootstrap
+        // uses it to tell a member's own space from a Shared-Drive folder.
+        drive_id: res.data.driveId || null
       };
     } catch (err) {
       this._handleDriveError(err, path);
@@ -60876,32 +60883,26 @@ var GoogleDriveAdapter = class {
       if (!file2 && this.connection.drive_id && currentId === this.connection.drive_id) {
         const isMember = await this._detectDriveMembership();
         if (!isMember) {
-          const fallbackRes = await this._withAutoRefresh(
-            () => this.drive.files.list({
-              supportsAllDrives: true,
-              includeItemsFromAllDrives: true,
-              corpora: "allDrives",
-              q: `name = '${segment.replace(/'/g, "\\'")}' and trashed = false`,
-              fields: "files(id, name, mimeType, parents)",
-              pageSize: 10
-            })
-          );
-          const allFallback = fallbackRes.data.files || [];
-          if (allFallback.length === 1) {
-            file2 = allFallback[0];
-          } else if (allFallback.length > 1) {
-            const parentMatched = allFallback.filter(
-              (f) => Array.isArray(f.parents) && f.parents.includes(currentId)
+          const allFallback = [];
+          let pageToken;
+          for (let page = 0; page < 5; page++) {
+            const fallbackRes = await this._withAutoRefresh(
+              () => this.drive.files.list({
+                supportsAllDrives: true,
+                includeItemsFromAllDrives: true,
+                corpora: "allDrives",
+                q: `name = '${segment.replace(/'/g, "\\'")}' and trashed = false`,
+                fields: "nextPageToken, files(id, name, mimeType, parents, driveId)",
+                pageSize: 100,
+                ...pageToken ? { pageToken } : {}
+              })
             );
-            if (parentMatched.length === 1) {
-              file2 = parentMatched[0];
-            } else {
-              const candidates = allFallback.map((f) => `${f.id} (parent ${(f.parents || []).join(",") || "n/a"})`).join("; ");
-              throw new Error(
-                `[aifs] Ambiguous path segment '${segment}': ${allFallback.length} accessible folders named '${segment}', ${parentMatched.length} under the expected parent. Candidates: ${candidates}. Resolve with an id:{folderId} anchor to disambiguate.`
-              );
-            }
+            allFallback.push(...fallbackRes.data.files || []);
+            pageToken = fallbackRes.data.nextPageToken;
+            if (!pageToken)
+              break;
           }
+          file2 = this._pickRootFallback(segment, allFallback, currentId);
         }
       }
       if (!file2) {
@@ -60912,6 +60913,42 @@ var GoogleDriveAdapter = class {
       currentPath = childPath;
     }
     return currentId;
+  }
+  /**
+   * crossorgpath (2.11.3, Dev Two live test, finding 34): choose the drive-root
+   * fallback match for a non-Drive-member. The global name search sees every
+   * drive the account can read, so a member of two orgs got the OTHER org's
+   * `agent-index-core` / `org-config.json` whenever exactly one same-named item
+   * came back (2.5.1 accepted a single match with no check at all). Only items
+   * whose `driveId` is this org's drive are candidates now; same-named items in
+   * other drives or My Drive are ignored (reported on stderr). Among in-drive
+   * candidates a single match is used as-is (its drive-root parent may be
+   * invisible to a non-member); several are tie-broken by parent == drive root,
+   * else we fail loud as before.
+   */
+  _pickRootFallback(segment, files, rootId) {
+    const driveId = this.connection.drive_id;
+    const inDrive = files.filter((f) => f && f.driveId === driveId);
+    const elsewhere = files.length - inDrive.length;
+    if (elsewhere > 0 && inDrive.length === 0) {
+      process.stderr.write(
+        `[aifs] '${segment}': ${elsewhere} same-named item(s) outside drive ${driveId} ignored; no match in this org's drive.
+`
+      );
+    }
+    if (inDrive.length === 1)
+      return inDrive[0];
+    if (inDrive.length === 0)
+      return void 0;
+    const parentMatched = inDrive.filter(
+      (f) => Array.isArray(f.parents) && f.parents.includes(rootId)
+    );
+    if (parentMatched.length === 1)
+      return parentMatched[0];
+    const candidates = inDrive.map((f) => `${f.id} (parent ${(f.parents || []).join(",") || "n/a"})`).join("; ");
+    throw new Error(
+      `[aifs] Ambiguous path segment '${segment}': ${inDrive.length} accessible items named '${segment}' in drive ${driveId}, ${parentMatched.length} under the expected parent. Candidates: ${candidates}. Resolve with an id:{folderId} anchor to disambiguate.`
+    );
   }
   /**
    * Get the root folder ID.
@@ -61548,7 +61585,7 @@ var GoogleDriveAdapter = class {
       );
       permissions = res?.data?.permissions || [];
     } catch (err) {
-      this._handlePermissionError(err, path, subject, null);
+      this._handlePermissionError(err, path, subject, null, "unshare");
     }
     const subjectLower = subject.toLowerCase();
     const match = permissions.find(
@@ -61566,7 +61603,7 @@ var GoogleDriveAdapter = class {
         () => this.drive.permissions.delete(deleteParams)
       );
     } catch (err) {
-      this._handlePermissionError(err, path, subject, null);
+      this._handlePermissionError(err, path, subject, null, "unshare");
     }
     return { unshared: true, path };
   }
@@ -61653,28 +61690,48 @@ var GoogleDriveAdapter = class {
         pageToken = res?.data?.nextPageToken;
       } while (pageToken);
     } catch (err) {
-      this._handlePermissionError(err, path, null, null);
+      this._handlePermissionError(err, path, null, null, "read permissions of");
     }
     const result = [];
     for (const p of all) {
-      const detail = p.permissionDetails && p.permissionDetails[0] || null;
-      const isInherited = detail?.inherited === true;
-      if (!includeInherited && isInherited)
-        continue;
-      let inheritedFrom = null;
-      if (isInherited && detail?.inheritedFrom) {
-        const resolved = this._idToPath(detail.inheritedFrom);
-        inheritedFrom = resolved !== null ? resolved : `gdrive-id:${detail.inheritedFrom}`;
+      const subject = p.emailAddress || (p.type === "anyone" ? "*" : p.type);
+      const mapRole = (r) => r === "owner" ? "owner" : this._driveRoleToAifsRole(r);
+      const details = Array.isArray(p.permissionDetails) ? p.permissionDetails : [];
+      const sources = [];
+      if (details.length === 0) {
+        sources.push({ role: mapRole(p.role), inheritedFrom: null, inherited: false });
+      } else {
+        for (const d of details) {
+          const inherited = d?.inherited === true;
+          let inheritedFrom = null;
+          if (inherited) {
+            if (d.inheritedFrom) {
+              const resolved = this._idToPath(d.inheritedFrom);
+              inheritedFrom = resolved !== null ? resolved : `gdrive-id:${d.inheritedFrom}`;
+            } else {
+              inheritedFrom = "gdrive-id:unknown";
+            }
+          }
+          sources.push({ role: mapRole(d?.role || p.role), inheritedFrom, inherited });
+        }
       }
-      const role = p.role === "owner" ? "owner" : this._driveRoleToAifsRole(p.role);
-      result.push({
-        subject: p.emailAddress || (p.type === "anyone" ? "*" : p.type),
-        role,
-        permission_id: p.id || null,
-        inherited_from: inheritedFrom,
-        granted_date: null
-        // Drive Permission resource has no creationTime
-      });
+      const seen = /* @__PURE__ */ new Set();
+      for (const src of sources) {
+        if (!includeInherited && src.inherited)
+          continue;
+        const key = `${src.role}|${src.inheritedFrom}`;
+        if (seen.has(key))
+          continue;
+        seen.add(key);
+        result.push({
+          subject,
+          role: src.role,
+          permission_id: p.id || null,
+          inherited_from: src.inheritedFrom,
+          granted_date: null
+          // Drive Permission resource has no creationTime
+        });
+      }
     }
     return { permissions: result };
   }
@@ -61790,16 +61847,81 @@ var GoogleDriveAdapter = class {
     if (!newOwner || typeof newOwner !== "string" || !newOwner.includes("@")) {
       throw new InvalidRecipientError(newOwner, "must be an email address");
     }
-    if (this.connection.drive_id) {
-      throw new NotImplementedError(
-        "transferOwnership",
-        "Shared Drive \u2014 ownership belongs to the drive, not individual users. Manage drive membership at the Workspace level instead."
-      );
-    }
     const fileId = await this._resolvePathToId(path);
     if (!fileId) {
       throw new PathNotFoundError(path);
     }
+    let meta3;
+    try {
+      meta3 = await this._withAutoRefresh(
+        () => this.drive.files.get({ fileId, fields: "id, mimeType, driveId", supportsAllDrives: true })
+      );
+    } catch (err) {
+      this._handleDriveError(err, path);
+    }
+    if (meta3?.data?.driveId) {
+      throw new NotImplementedError(
+        "transferOwnership",
+        "Shared Drive item \u2014 ownership belongs to the drive, not individual users. Manage drive membership at the Workspace level instead."
+      );
+    }
+    const targets = [fileId];
+    if (meta3?.data?.mimeType === "application/vnd.google-apps.folder") {
+      try {
+        targets.push(...await this._ownedDescendants(fileId));
+      } catch (err) {
+        this._handleDriveError(err, path);
+      }
+    }
+    const failed = [];
+    for (const id of targets) {
+      try {
+        await this._transferOne(id, newOwner, id === fileId ? path : `id:${id}`);
+      } catch (err) {
+        if (id === fileId)
+          throw err;
+        failed.push({ id, error: err?.message || String(err) });
+      }
+    }
+    return {
+      transferred: true,
+      path,
+      new_owner: newOwner,
+      items: targets.length,
+      ...failed.length ? { partial: true, failed_items: failed } : {}
+    };
+  }
+  /** IDs of every non-trashed descendant of folderId that the caller owns. */
+  async _ownedDescendants(folderId) {
+    const out = [];
+    const queue = [folderId];
+    while (queue.length) {
+      const parent = queue.shift();
+      let pageToken;
+      do {
+        const res = await this._withAutoRefresh(
+          () => this.drive.files.list({
+            q: `'${parent}' in parents and trashed = false`,
+            fields: "nextPageToken, files(id, mimeType, ownedByMe)",
+            pageSize: 200,
+            supportsAllDrives: true,
+            includeItemsFromAllDrives: true,
+            ...pageToken ? { pageToken } : {}
+          })
+        );
+        for (const f of res?.data?.files || []) {
+          if (f.ownedByMe)
+            out.push(f.id);
+          if (f.mimeType === "application/vnd.google-apps.folder")
+            queue.push(f.id);
+        }
+        pageToken = res?.data?.nextPageToken;
+      } while (pageToken);
+    }
+    return out;
+  }
+  /** One permissions.create(role owner) call, with the error mapping below. */
+  async _transferOne(fileId, newOwner, path = `id:${fileId}`) {
     const params = {
       fileId,
       requestBody: {
@@ -61830,23 +61952,22 @@ var GoogleDriveAdapter = class {
           err
         );
       }
-      this._handlePermissionError(err, path, newOwner, "owner");
+      this._handlePermissionError(err, path, newOwner, "owner", "transfer ownership of");
     }
-    return { transferred: true, path, new_owner: newOwner };
   }
   /**
    * Map Drive permissions API errors to typed AIFS errors. Permission
    * errors have richer semantics than file ops so they get their own
    * mapper rather than reusing _handleDriveError.
    */
-  _handlePermissionError(err, path, subject, role) {
+  _handlePermissionError(err, path, subject, role, action = "share") {
     const status = err.code || err.response?.status;
     const message = err?.errors?.[0]?.message || err?.message || "";
     switch (status) {
       case 401:
         throw new NotAuthenticatedError("expired");
       case 403:
-        throw new AccessDeniedError(path, "share");
+        throw new AccessDeniedError(path, action);
       case 404:
         throw new PathNotFoundError(path);
       case 400:
@@ -61901,7 +62022,8 @@ function normalizePathArgs(args) {
 var PATH_CACHE_FILENAME = "path-cache.json";
 var PATH_CACHE_MAX_AGE_MS = 30 * 60 * 1e3;
 var PATH_CACHE_MAX_ENTRIES = 2e3;
-async function loadPathCache(credentialStore) {
+var PATH_CACHE_SCHEMA = 2;
+async function loadPathCache(credentialStore, driveId) {
   const cachePath = join2(credentialStore, PATH_CACHE_FILENAME);
   try {
     const raw = await readFile3(cachePath, "utf-8");
@@ -61909,12 +62031,15 @@ async function loadPathCache(credentialStore) {
     if (data.timestamp && Date.now() - data.timestamp > PATH_CACHE_MAX_AGE_MS) {
       return /* @__PURE__ */ new Map();
     }
+    if (data.schema !== PATH_CACHE_SCHEMA || (data.drive_id || null) !== (driveId || null)) {
+      return /* @__PURE__ */ new Map();
+    }
     return new Map(Object.entries(data.entries || {}));
   } catch {
     return /* @__PURE__ */ new Map();
   }
 }
-async function savePathCache(credentialStore, pathCache) {
+async function savePathCache(credentialStore, pathCache, driveId) {
   const cachePath = join2(credentialStore, PATH_CACHE_FILENAME);
   const entries = {};
   let count = 0;
@@ -61925,6 +62050,8 @@ async function savePathCache(credentialStore, pathCache) {
     count++;
   }
   const data = {
+    schema: PATH_CACHE_SCHEMA,
+    drive_id: driveId || null,
     timestamp: Date.now(),
     entries
   };
@@ -61959,7 +62086,7 @@ async function routeToolCall(adapter, toolName, args) {
   switch (toolName) {
     case "aifs_read":
       requireArgs(toolName, args, [["path", "path"]]);
-      return adapter.read(args.path);
+      return adapter.read(args.path, { encoding: args.encoding });
     case "aifs_write": {
       requireArgs(toolName, args, [["path", "path"]]);
       let content = args.content;
@@ -62118,9 +62245,37 @@ async function main() {
         "aifs_write_batch",
         "aifs_stat_batch"
       ],
+      // Argument signatures, kept in step with routeToolCall above.
+      // "?" = optional. Unknown arguments are ignored without an error.
+      arguments: {
+        aifs_read: "{path}",
+        aifs_write: "{path, content | content_file | content_stdin, encoding?, if_revision?}",
+        aifs_list: "{path, recursive?}",
+        aifs_exists: "{path}",
+        aifs_stat: "{path}",
+        aifs_delete: "{path}",
+        aifs_copy: "{source, destination}",
+        aifs_auth_status: "{}",
+        aifs_authenticate: '{action?: "start"|"complete", auth_code?}',
+        aifs_share: "{path, subject, role, inherit?}",
+        aifs_unshare: "{path, subject}",
+        aifs_get_permissions: "{path, include_inherited?}",
+        aifs_search: '{scope, name_contains?, type?: "file"|"folder"|"any", max_results?}',
+        aifs_transfer_ownership: "{path, new_owner}",
+        aifs_write_batch: "{entries: [{path, content | content_file, encoding?}]}",
+        aifs_stat_batch: "{paths: [...]}"
+      },
+      notes: [
+        "aifs_write: give exactly one of content, content_file, content_stdin. Inline content is bounded by the OS argument limit (~128 KiB); content_file and content_stdin have no size limit. If more than one is given, content wins, then content_file, then content_stdin.",
+        'encoding "base64": a content_file/content_stdin payload is taken as raw bytes (use for binary files; otherwise it is read as UTF-8). An inline content string must itself be base64.',
+        "if_revision: revision from aifs_stat; the write fails with REVISION_CONFLICT if the file has changed since.",
+        "aifs_search: without name_contains nothing is filtered \u2014 an arbitrary, unordered page of up to max_results (default 100, max 1000) items under scope."
+      ],
       examples: [
         `aifs-exec aifs_read '{"path":"/projects/foo/project.md"}'`,
         `aifs-exec aifs_list '{"path":"/shared/projects"}'`,
+        `aifs-exec aifs_write '{"path":"/shared/foo/big.json","content_file":"/tmp/big.json"}'`,
+        `aifs-exec aifs_search '{"scope":"/shared","name_contains":"proposal","type":"file"}'`,
         "aifs-exec aifs_auth_status"
       ]
     }, null, 2));
@@ -62169,7 +62324,7 @@ async function main() {
     }));
     process.exit(1);
   }
-  const cachedPaths = await loadPathCache(config2.auth.credentialStore);
+  const cachedPaths = await loadPathCache(config2.auth.credentialStore, config2.connection?.drive_id);
   for (const [path, entry] of cachedPaths) {
     if (!adapter.pathCache.has(path)) {
       adapter.pathCache.set(path, entry);
@@ -62196,7 +62351,7 @@ async function main() {
     }, null, 2));
     process.exit(1);
   } finally {
-    await savePathCache(config2.auth.credentialStore, adapter.pathCache);
+    await savePathCache(config2.auth.credentialStore, adapter.pathCache, config2.connection?.drive_id);
   }
 }
 main();

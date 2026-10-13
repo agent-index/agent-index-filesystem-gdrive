@@ -1,21 +1,32 @@
 # agent-index-filesystem-gdrive — Changelog
 
-## [Unreleased] — --help documents every tool and argument (f848, e428)
-
-Version is set at release.
-
-### Changed
-- **`--help` lists all 16 tools with their arguments.** It previously listed 9 tools and no arguments (bug `f848`). `src/aifs-exec.sh` now gives each tool's JSON argument signature, the three `aifs_write` content sources (`content`, `content_file`, `content_stdin`) with their limits and precedence, what `encoding: "base64"` means for a file or stdin payload, `if_revision`, and the fact that unknown arguments are ignored. Two examples are added. The executor's JSON `--help` (`src/exec.mjs`) gains an `arguments` map and `notes` with the same content. No behaviour change.
-- **README** counts 16 `aifs_*` tools: 9 core, 5 access-control, and the 2 batch ops added in 2.9.0. It previously said 14.
-
-### Added
-- **`adapter.json`: `write_supports_content_file` and `write_supports_content_stdin`** (both `true`), alongside `write_supports_if_revision`, so a consumer can detect support. `aifs_write` has accepted both since 2.6.0, but no documentation surface showed them (bug `e428`).
+## [2.11.4] — 2026-10-13 — ownership transfer for My-Drive items on Shared-Drive orgs (xferitemdrive)
 
 ### Fixed
-- The `aifs_write_batch` comment in `src/exec.mjs` said entries resolve content "the same three ways as aifs_write". Batch entries accept `content` and `content_file` only, not `content_stdin`.
+- **Ownership transfer refused every item on a Shared-Drive org (`xferitemdrive`, Dev Two live test finding 48).** `transferOwnership` returned NOT_IMPLEMENTED whenever the org has a `drive_id`, without checking where the item lives. A private library doc sits in the member's own My Drive, where Drive does allow the transfer, so no doc could ever change owner (B10). The adapter now reads the item's own `driveId`: an item inside a Shared Drive is still NOT_IMPLEMENTED; a My-Drive item is transferred. For a folder, the folder and every descendant the caller owns are transferred (a folder's ownership doesn't carry its contents); a descendant that fails is reported in `failed_items` with `partial: true`.
+- **`aifs_stat` returns `drive_id`** (the Shared Drive the item lives in, `null` for My Drive; `statdriveid`, finding 39). Pointers can now record `item_drive_id`, and member-bootstrap can tell a member's own space from a Shared-Drive folder.
+- **A refused permissions read names the read** (`permsverb`, finding 47). A reader's `aifs_get_permissions` said "Permission denied to share"; it now says "read permissions of". Unshare and transfer name their own operations too.
+- Five regression tests added (suite 41/41).
+
+### Also in 2.11.4 — `--help` documents every tool and argument (merged from main, gdrive#1; bugs `f848`, `e428`)
+- **`--help` lists all 16 tools with their arguments** (it listed 9 tools and no arguments). `src/aifs-exec.sh` gives each tool's JSON argument signature, the three `aifs_write` content sources (`content`, `content_file`, `content_stdin`) with their limits and precedence, what `encoding: "base64"` means, `if_revision`, and that unknown arguments are ignored; the executor's JSON `--help` (`src/exec.mjs`) gains an `arguments` map and `notes`. No behaviour change.
+- **README** counts 16 `aifs_*` tools (9 core, 5 access-control, 2 batch).
+- **`adapter.json`: `write_supports_content_file` and `write_supports_content_stdin`** (both `true`), so a consumer can detect support (`aifs_write` has accepted both since 2.6.0).
+- The `aifs_write_batch` comment in `src/exec.mjs` now says batch entries accept `content` and `content_file` only.
 - Removed `dist/test_write.tmp`, an empty file committed by mistake.
 
-`dist/` is not rebuilt in this change. The build copies `src/aifs-exec.sh` into `dist/` and restamps `adapter.json`, which happens at release.
+## [2.11.3] — 2026-10-13 — path lookups stay in this org's drive (crossorgpath)
+
+### Fixed
+- **A member of two orgs read the other org's files (`crossorgpath`, Dev Two live test finding 34).** For an account that isn't a member of the org's Shared Drive, a top-level name that isn't found under the drive root falls back to a search across every drive the account can read. Since 2.5.1 a single result was accepted with no check, so `/agent-index-core` and `/org-config.json` resolved into another org's drive (core 3.28.1 instead of 4.0.0) and every path-read task definition came from the wrong org. The fallback now requests each item's `driveId` and only considers items in this org's drive; same-named items in other drives or My Drive are ignored (noted on stderr). A single in-drive match is still accepted when its parent is invisible; several are tie-broken by parent as before, else the lookup fails loud.
+- **The persisted path cache is drive-scoped.** `path-cache.json` now records a schema number and the drive id, and a cache from an older adapter or another drive is discarded, so wrong entries resolved by 2.11.2 and earlier don't survive the upgrade.
+- **`aifs_read` honors `encoding: "base64"`** (`readencodingignored`, finding 37). Before, base64 came back only when the content contained a NUL byte.
+- Five regression tests added (suite 36/36).
+
+## [2.11.2] — 2026-10-13 — direct grants on top of inherited access (getpermsinheritedmask)
+
+### Fixed
+- **`aifs_get_permissions` reports one entry per access source (`getpermsinheritedmask`, found in the agent-index-core 3.32.0 live test).** Drive returns one permission per principal per file, with `permissionDetails[]` listing each source of that principal's access. The adapter read only the first entry, so a direct grant layered on inherited access (for example a direct writer on `/shared/projects/` for a group that also inherits reader from `/shared`) was reported as *inherited*. The core permission-changes procedure then marked every such grant `verify_mismatch`, and couldn't plan removing a direct grant that coexists with inherited access. Each distinct source is now its own entry (direct ones with `inherited_from: null`), duplicate sources are merged, and `includeInherited: false` keeps the direct part of a mixed permission instead of dropping it. Four regression tests added (suite 31/31).
 
 ## [2.11.1] — 2026-07-12 — Release C.1.4.3.1 — fix aifs_get_permissions regression (getpermsinvalidownerfield)
 
@@ -118,7 +129,7 @@ Format: [MAJOR.MINOR.PATCH] — YYYY-MM-DD
 
 ---
 
-## [2.4.1] — <RELEASE_DATE> — companion to core 3.7.4
+## [2.4.1] — 2026-10-13 — companion to core 3.7.4
 
 ### Fixed
 
