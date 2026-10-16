@@ -60024,6 +60024,41 @@ function detectSentinel(content) {
 }
 var aifsSleep = (ms) => new Promise((resolve2) => setTimeout(resolve2, ms));
 var READ_RETRY_BACKOFF_MS = [500, 1e3, 2e3];
+var NETWORK_ERROR_CODES = /* @__PURE__ */ new Set([
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "ESOCKETTIMEDOUT",
+  "ENETUNREACH",
+  "ENETDOWN",
+  "EHOSTUNREACH",
+  "ECONNABORTED",
+  "EPIPE",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+  "UND_ERR_HEADERS_TIMEOUT"
+]);
+function classifyRefreshError(err) {
+  if (!err)
+    return "refresh_failed";
+  if (err.refresh_reason)
+    return err.refresh_reason;
+  const codes = [err.code, err.cause?.code, err.errno, err.cause?.errno].filter((c) => typeof c === "string");
+  const status = err.response?.status ?? err.status;
+  const oauthErr = err.response?.data?.error;
+  const msg = `${err.message || ""} ${err.cause?.message || ""}`;
+  if (oauthErr === "invalid_grant" || /invalid_grant|revoked/i.test(msg))
+    return "expired";
+  if (status === 407 || codes.some((c) => /CERT|TLS|SSL|SELF_SIGNED|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER/.test(c)) || /certificate|self[- ]signed|\btls\b|\bssl\b|proxy/i.test(msg)) {
+    return "tls_or_proxy_error";
+  }
+  if (codes.some((c) => NETWORK_ERROR_CODES.has(c)) || /getaddrinfo|timed? ?out|network|socket hang up|fetch failed/i.test(msg)) {
+    return "network_error";
+  }
+  return "refresh_failed";
+}
 var GoogleDriveAdapter = class {
   constructor() {
     this.connection = null;
@@ -60096,8 +60131,13 @@ var GoogleDriveAdapter = class {
             user_identity: await this._getUserEmail(),
             expires_at: new Date(this.tokens.expiry_date).toISOString()
           };
-        } catch {
-          return { authenticated: false, ...base, reason: "expired" };
+        } catch (err) {
+          return {
+            authenticated: false,
+            ...base,
+            reason: err?.details?.refresh_reason || classifyRefreshError(err),
+            detail: err?.details?.refresh_detail || err?.message || String(err)
+          };
         }
       }
       return { authenticated: false, ...base, reason: "expired" };
@@ -60271,8 +60311,9 @@ var GoogleDriveAdapter = class {
     }
   }
   // ─── File Operations ─────────────────────────────────────────────────
-  async read(path, opts = {}) {
+  async read(path, opts = {}, _staleRetried = false) {
     this._ensureAuth();
+    const cacheHit = this.pathCache.has(this._normalizePath(path));
     let fileId = await this._resolvePathToId(path);
     if (!fileId) {
       this.pathCache.delete(this._normalizePath(path));
@@ -60329,6 +60370,11 @@ var GoogleDriveAdapter = class {
     } catch (err) {
       if (err instanceof AifsError)
         throw err;
+      const status = err.code || err.response?.status;
+      if (status === 404 && cacheHit && !_staleRetried) {
+        this.pathCache.delete(this._normalizePath(path));
+        return this.read(path, opts, true);
+      }
       this._handleDriveError(err, path);
     }
   }
@@ -60731,6 +60777,7 @@ var GoogleDriveAdapter = class {
       }
     }
     const isSharedDrive = !!this.connection.drive_id;
+    const denialDetail = "On shared drives, files are typically owned by the drive itself; removing them requires the organizer or contentManager role. Ask your Workspace admin to remove the file, or run this operation from an account with the necessary permissions.";
     const driveRemove = async (id) => {
       const params = { fileId: id };
       if (isSharedDrive)
@@ -60740,14 +60787,22 @@ var GoogleDriveAdapter = class {
         return;
       } catch (delErr) {
         const status = delErr.code || delErr.response?.status;
-        if (isSharedDrive && status === 404) {
-          await this._withAutoRefresh(
-            () => this.drive.files.update({
-              fileId: id,
-              requestBody: { trashed: true },
-              supportsAllDrives: true
-            })
-          );
+        if (isSharedDrive && (status === 404 || status === 403)) {
+          try {
+            await this._withAutoRefresh(
+              () => this.drive.files.update({
+                fileId: id,
+                requestBody: { trashed: true },
+                supportsAllDrives: true
+              })
+            );
+          } catch (trashErr) {
+            const trashStatus = trashErr.code || trashErr.response?.status;
+            if (status === 403 && (trashStatus === 403 || trashStatus === 404)) {
+              throw new AccessDeniedError(path, "delete or trash", denialDetail);
+            }
+            throw trashErr;
+          }
           return;
         }
         throw delErr;
@@ -60758,12 +60813,13 @@ var GoogleDriveAdapter = class {
       this.pathCache.delete(normalized);
       return;
     } catch (err) {
+      if (err instanceof AifsError)
+        throw err;
       const status = err.code || err.response?.status;
       if (status !== 404) {
         this._handleDriveError(err, path);
         return;
       }
-      const denialDetail = "On shared drives, files are typically owned by the drive itself; removing them requires the organizer or contentManager role. Ask your Workspace admin to remove the file, or run this operation from an account with the necessary permissions.";
       if (cached2) {
         this.pathCache.delete(normalized);
         const freshId2 = await this._resolvePathToId(path);
@@ -60778,6 +60834,8 @@ var GoogleDriveAdapter = class {
           this.pathCache.delete(normalized);
           return;
         } catch (retryErr) {
+          if (retryErr instanceof AifsError)
+            throw retryErr;
           this._handleDriveError(retryErr, path);
           return;
         }
@@ -61212,15 +61270,25 @@ var GoogleDriveAdapter = class {
    * Refresh the access token using the stored refresh token.
    */
   async _refreshToken() {
+    const fail = (reason, err) => {
+      const e = new NotAuthenticatedError(`Token refresh failed: ${err?.message || err}`);
+      e.details.refresh_reason = reason;
+      e.details.refresh_detail = err?.message || String(err);
+      e.details.needs_auth = reason === "expired" || reason === "refresh_failed";
+      return e;
+    };
+    let credentials;
     try {
-      const { credentials } = await this.oauth2Client.refreshAccessToken();
-      this.tokens = credentials;
-      this.oauth2Client.setCredentials(credentials);
+      ({ credentials } = await this.oauth2Client.refreshAccessToken());
+    } catch (err) {
+      throw fail(classifyRefreshError(err), err);
+    }
+    this.tokens = credentials;
+    this.oauth2Client.setCredentials(credentials);
+    try {
       await this._writeCredential(credentials);
     } catch (err) {
-      throw new NotAuthenticatedError(
-        `Token refresh failed: ${err.message}`
-      );
+      throw fail("credential_write_failed", err);
     }
   }
   // ─── Cross-process path locking ────────────────────────────────────────

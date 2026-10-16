@@ -666,3 +666,158 @@ test('getPermissions: a 403 names the read, not "share" (permsverb)', async () =
   adapter.drive = { permissions: { list: async () => { const e = new Error('denied'); e.code = 403; throw e; } } };
   await assert.rejects(() => adapter.getPermissions('id:F'), (e) => e.code === 'ACCESS_DENIED' && /read permissions of/.test(e.message));
 });
+
+// ─── getAuthStatus: refresh-failure classification (a1c4) ─────────────
+
+function authAdapter(refreshImpl, writeImpl) {
+  const adapter = new GoogleDriveAdapter();
+  adapter.connection = {};
+  adapter.tokens = { access_token: 'a', refresh_token: 'r', expiry_date: Date.now() - 1000 };
+  adapter.oauth2Client = { refreshAccessToken: refreshImpl, setCredentials: () => {} };
+  adapter._writeCredential = writeImpl ?? (async () => {});
+  adapter._getUserEmail = async () => 'me@x.com';
+  return adapter;
+}
+const errWith = (props) => Object.assign(new Error(props.message || 'boom'), props);
+
+test('authStatus: invalid_grant → reason "expired" + detail', async () => {
+  const a = authAdapter(async () => {
+    throw errWith({ message: 'invalid_grant', response: { status: 400, data: { error: 'invalid_grant' } } });
+  });
+  const s = await a.getAuthStatus();
+  assert.equal(s.authenticated, false);
+  assert.equal(s.reason, 'expired');
+  assert.match(s.detail, /invalid_grant/);
+});
+
+test('authStatus: DNS / timeout failures → "network_error", never "expired"', async () => {
+  for (const e of [
+    errWith({ message: 'getaddrinfo ENOTFOUND oauth2.googleapis.com', code: 'ENOTFOUND' }),
+    errWith({ message: 'request failed', cause: { code: 'ETIMEDOUT' } }),
+  ]) {
+    const s = await authAdapter(async () => { throw e; }).getAuthStatus();
+    assert.equal(s.authenticated, false);
+    assert.equal(s.reason, 'network_error');
+  }
+});
+
+test('authStatus: TLS / proxy failures → "tls_or_proxy_error"', async () => {
+  for (const e of [
+    errWith({ message: 'self-signed certificate in certificate chain', code: 'SELF_SIGNED_CERT_IN_CHAIN' }),
+    errWith({ message: 'unable to get local issuer certificate', code: 'UNABLE_TO_GET_ISSUER_CERT_LOCALLY' }),
+    errWith({ message: 'Proxy Authentication Required', response: { status: 407 } }),
+  ]) {
+    const s = await authAdapter(async () => { throw e; }).getAuthStatus();
+    assert.equal(s.reason, 'tls_or_proxy_error');
+  }
+});
+
+test('authStatus: credential file write failure → "credential_write_failed"', async () => {
+  const a = authAdapter(
+    async () => ({ credentials: { access_token: 'new', refresh_token: 'r', expiry_date: Date.now() + 3600e3 } }),
+    async () => { throw errWith({ message: 'EROFS: read-only file system', code: 'EROFS' }); },
+  );
+  const s = await a.getAuthStatus();
+  assert.equal(s.authenticated, false);
+  assert.equal(s.reason, 'credential_write_failed');
+  assert.match(s.detail, /EROFS/);
+});
+
+test('authStatus: unrecognised failure → "refresh_failed" with the message', async () => {
+  const s = await authAdapter(async () => { throw new Error('clock skew weirdness'); }).getAuthStatus();
+  assert.equal(s.reason, 'refresh_failed');
+  assert.match(s.detail, /clock skew weirdness/);
+});
+
+test('authStatus: successful refresh still reports authenticated', async () => {
+  const a = authAdapter(async () => ({ credentials: { access_token: 'n', refresh_token: 'r', expiry_date: Date.now() + 3600e3 } }));
+  const s = await a.getAuthStatus();
+  assert.equal(s.authenticated, true);
+  assert.equal(s.user_identity, 'me@x.com');
+});
+
+test('_refreshToken: still throws NOT_AUTHENTICATED, tagged with the cause', async () => {
+  const a = authAdapter(async () => { throw errWith({ message: 'connect ECONNREFUSED', code: 'ECONNREFUSED' }); });
+  await assert.rejects(() => a._refreshToken(),
+    (e) => e.code === 'NOT_AUTHENTICATED' && e.details.refresh_reason === 'network_error');
+});
+
+// ─── delete: Shared-Drive trash fallback on 403 (52e2) ────────────────
+
+function deleteAdapter({ deleteStatus, trashImpl }) {
+  const adapter = new GoogleDriveAdapter();
+  adapter.connection = { drive_id: 'SD1' };
+  adapter._ensureAuth = () => {};
+  adapter._withAutoRefresh = (fn) => fn();
+  adapter._resolvePathToId = async () => 'F';
+  const calls = { delete: 0, update: [] };
+  adapter.drive = {
+    files: {
+      delete: async () => { calls.delete++; throw errWith({ message: 'nope', code: deleteStatus }); },
+      update: async (params) => { calls.update.push(params); return (trashImpl ?? (() => ({ data: {} })))(params); },
+    },
+  };
+  return { adapter, calls };
+}
+
+test('delete: Shared-Drive writer gets 403 on delete → trashes instead', async () => {
+  const { adapter, calls } = deleteAdapter({ deleteStatus: 403 });
+  await adapter.delete('/shared/members/artifacts/h/x.txt');
+  assert.equal(calls.delete, 1);
+  assert.equal(calls.update.length, 1);
+  assert.deepEqual(calls.update[0].requestBody, { trashed: true });
+});
+
+test('delete: 403 on delete AND on trash → ACCESS_DENIED with organizer/contentManager guidance', async () => {
+  const { adapter } = deleteAdapter({
+    deleteStatus: 403,
+    trashImpl: () => { throw errWith({ message: 'insufficient', code: 403 }); },
+  });
+  await assert.rejects(() => adapter.delete('/shared/x.txt'),
+    (e) => e.code === 'ACCESS_DENIED' && /delete or trash/.test(e.message) && /contentManager/.test(e.message));
+});
+
+test('delete: 404 on delete still trashes (unchanged)', async () => {
+  const { adapter, calls } = deleteAdapter({ deleteStatus: 404 });
+  await adapter.delete('/shared/x.txt');
+  assert.equal(calls.update.length, 1);
+});
+
+// ─── read: stale cached id (d5f1) ─────────────────────────────────────
+
+test('read: 404 on a cached id drops the entry, re-resolves, retries once', async () => {
+  const { adapter } = mockAdapter({});
+  delete adapter._resolvePathToId; // use the real resolver; stub the walk below
+  adapter.pathCache.set('/doc.md', { id: 'STALE', mimeType: 'text/plain' });
+  let walks = 0;
+  adapter._getRootId = async () => 'ROOT';
+  adapter._withAutoRefresh = (fn) => fn();
+  adapter.drive.files.list = async () => { walks++; return { data: { files: [{ id: 'FRESH', name: 'doc.md', mimeType: 'text/plain', parents: ['ROOT'] }] } }; };
+  const seen = [];
+  adapter.drive.files.get = async (params) => {
+    seen.push(params.fileId);
+    if (params.fileId === 'STALE') throw errWith({ message: 'File not found', code: 404 });
+    return media('fresh content');
+  };
+  assert.equal(await adapter.read('/doc.md'), 'fresh content');
+  assert.deepEqual(seen, ['STALE', 'FRESH']);
+  assert.equal(walks, 1);
+  assert.equal(adapter.pathCache.get('/doc.md').id, 'FRESH');
+});
+
+test('read: 404 without a cache hit is FILE_NOT_FOUND with no retry', async () => {
+  const { adapter } = mockAdapter({ getImpls: [() => { throw errWith({ message: 'gone', code: 404 }); }] });
+  let resolves = 0;
+  adapter._resolvePathToId = async () => { resolves++; return 'F'; };
+  await assert.rejects(() => adapter.read('/x.md'), (e) => e.code === 'FILE_NOT_FOUND');
+  assert.equal(resolves, 1);
+});
+
+test('read: 404 persists after re-resolve → FILE_NOT_FOUND (retried only once)', async () => {
+  const { adapter } = mockAdapter({ getImpls: [() => { throw errWith({ message: 'gone', code: 404 }); }] });
+  adapter.pathCache.set('/x.md', { id: 'F', mimeType: 'text/plain' });
+  let resolves = 0;
+  adapter._resolvePathToId = async (p) => { resolves++; adapter.pathCache.set('/x.md', { id: 'F' }); return 'F'; };
+  await assert.rejects(() => adapter.read('/x.md'), (e) => e.code === 'FILE_NOT_FOUND');
+  assert.equal(resolves, 2);
+});

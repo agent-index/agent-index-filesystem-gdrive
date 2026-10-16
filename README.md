@@ -12,7 +12,9 @@ Members do not interact with this package directly. The adapter handles backend 
 
 - Personal Drive and Shared Drive support (`supportsAllDrives`)
 - Path-to-ID resolution with caching for performance
-- OAuth2 per-member authentication with automatic token refresh
+- OAuth2 per-member authentication with automatic token refresh. When a refresh fails, `aifs_auth_status` returns `authenticated: false` with a `reason` naming the cause and a `detail` message (v2.11.5+): `expired` (invalid_grant / revoked — re-authenticate), `network_error` (DNS, timeout, unreachable), `tls_or_proxy_error` (certificate or proxy failure), `credential_write_failed` (the refreshed token could not be saved), or `refresh_failed` (anything else). Only `expired` means signing in again will help.
+- A stale cached id that returns 404 on read is dropped, the path re-resolved, and the read retried once (v2.11.5+)
+- `aifs_delete` on a Shared Drive falls back to trashing when permanent delete returns 403 or 404 (v2.11.5+)
 - Recursive parent directory creation on write
 - All 16 `aifs_*` tools supported (9 core + 5 access-control as of v2.2.0 / contract v2.0.0, + 2 batch ops as of v2.9.0)
 - Revision-aware writes via `if_revision` parameter on `aifs_write` (v2.2.0+)
