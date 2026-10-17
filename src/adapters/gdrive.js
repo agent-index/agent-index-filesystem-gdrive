@@ -258,6 +258,39 @@ export const aifsSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms
 /** Backoff schedule (ms) for unreliable-read retries (flakyread). */
 export const READ_RETRY_BACKOFF_MS = [500, 1000, 2000];
 
+const NETWORK_ERROR_CODES = new Set([
+  'ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT',
+  'ESOCKETTIMEDOUT', 'ENETUNREACH', 'ENETDOWN', 'EHOSTUNREACH', 'ECONNABORTED',
+  'EPIPE', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_HEADERS_TIMEOUT',
+]);
+
+/**
+ * Classify a token-refresh failure (bug 20260822-8d20ea22-143449-a1c4).
+ * Only a genuine invalid_grant / revoked token is reported as 'expired'
+ * (re-auth needed); a transport failure must never read as an expired
+ * credential. Returns one of: expired | network_error | tls_or_proxy_error
+ * | credential_write_failed | refresh_failed.
+ */
+export function classifyRefreshError(err) {
+  if (!err) return 'refresh_failed';
+  if (err.refresh_reason) return err.refresh_reason;
+  const codes = [err.code, err.cause?.code, err.errno, err.cause?.errno]
+    .filter((c) => typeof c === 'string');
+  const status = err.response?.status ?? err.status;
+  const oauthErr = err.response?.data?.error;
+  const msg = `${err.message || ''} ${err.cause?.message || ''}`;
+  if (oauthErr === 'invalid_grant' || /invalid_grant|revoked/i.test(msg)) return 'expired';
+  if (status === 407 || codes.some((c) => /CERT|TLS|SSL|SELF_SIGNED|UNABLE_TO_VERIFY|UNABLE_TO_GET_ISSUER/.test(c))
+      || /certificate|self[- ]signed|\btls\b|\bssl\b|proxy/i.test(msg)) {
+    return 'tls_or_proxy_error';
+  }
+  if (codes.some((c) => NETWORK_ERROR_CODES.has(c))
+      || /getaddrinfo|timed? ?out|network|socket hang up|fetch failed/i.test(msg)) {
+    return 'network_error';
+  }
+  return 'refresh_failed';
+}
+
 export class GoogleDriveAdapter {
   constructor() {
     this.connection = null;
@@ -391,8 +424,14 @@ export class GoogleDriveAdapter {
             user_identity: await this._getUserEmail(),
             expires_at: new Date(this.tokens.expiry_date).toISOString(),
           };
-        } catch {
-          return { authenticated: false, ...base, reason: 'expired' };
+        } catch (err) {
+          // a1c4: report the actual cause; only invalid_grant/revoked is 'expired'.
+          return {
+            authenticated: false,
+            ...base,
+            reason: err?.details?.refresh_reason || classifyRefreshError(err),
+            detail: err?.details?.refresh_detail || err?.message || String(err),
+          };
         }
       }
       return { authenticated: false, ...base, reason: 'expired' };
@@ -633,8 +672,11 @@ export class GoogleDriveAdapter {
 
   // ─── File Operations ─────────────────────────────────────────────────
 
-  async read(path, opts = {}) {
+  async read(path, opts = {}, _staleRetried = false) {
     this._ensureAuth();
+    // d5f1: remember whether the id came from the path cache, so a 404 on a
+    // stale cached id re-resolves instead of reporting FILE_NOT_FOUND.
+    const cacheHit = this.pathCache.has(this._normalizePath(path));
     let fileId = await this._resolvePathToId(path);
 
     if (!fileId) {
@@ -707,6 +749,14 @@ export class GoogleDriveAdapter {
       return text;
     } catch (err) {
       if (err instanceof AifsError) throw err;
+      const status = err.code || err.response?.status;
+      if (status === 404 && cacheHit && !_staleRetried) {
+        // Bug 20260822-8d20ea22-143452-d5f1: the cached id may be stale (the
+        // object was moved or re-created out of band). Drop the entry,
+        // re-resolve the path, and retry once before reporting FILE_NOT_FOUND.
+        this.pathCache.delete(this._normalizePath(path));
+        return this.read(path, opts, true);
+      }
       this._handleDriveError(err, path);
     }
   }
@@ -1231,10 +1281,15 @@ export class GoogleDriveAdapter {
     }
 
     const isSharedDrive = !!this.connection.drive_id;
+    const denialDetail =
+      'On shared drives, files are typically owned by the drive itself; ' +
+      'removing them requires the organizer or contentManager role. Ask ' +
+      'your Workspace admin to remove the file, or run this operation ' +
+      'from an account with the necessary permissions.';
 
     // Attempt permanent deletion first; fall back to trash if Drive
-    // returns 404 on a shared drive (contributors can't permanently
-    // delete — only organizers can — but everyone can trash).
+    // returns 404 or 403 on a shared drive (contributors can't permanently
+    // delete — only organizers can — but may be able to trash).
     const driveRemove = async (id) => {
       const params = { fileId: id };
       if (isSharedDrive) params.supportsAllDrives = true;
@@ -1244,16 +1299,25 @@ export class GoogleDriveAdapter {
         return;
       } catch (delErr) {
         const status = delErr.code || delErr.response?.status;
-        // On shared drives, 404 from files.delete often means the caller
-        // lacks organizer role — fall back to trashing the file instead.
-        if (isSharedDrive && status === 404) {
-          await this._withAutoRefresh(() =>
-            this.drive.files.update({
-              fileId: id,
-              requestBody: { trashed: true },
-              supportsAllDrives: true,
-            })
-          );
+        // On shared drives, 404 (or 403 for a plain writer — bug
+        // 20260903-68dff8bf-131606-52e2) from files.delete often means the
+        // caller lacks organizer role — fall back to trashing the file instead.
+        if (isSharedDrive && (status === 404 || status === 403)) {
+          try {
+            await this._withAutoRefresh(() =>
+              this.drive.files.update({
+                fileId: id,
+                requestBody: { trashed: true },
+                supportsAllDrives: true,
+              })
+            );
+          } catch (trashErr) {
+            const trashStatus = trashErr.code || trashErr.response?.status;
+            if (status === 403 && (trashStatus === 403 || trashStatus === 404)) {
+              throw new AccessDeniedError(path, 'delete or trash', denialDetail);
+            }
+            throw trashErr;
+          }
           return;
         }
         throw delErr;
@@ -1265,6 +1329,7 @@ export class GoogleDriveAdapter {
       this.pathCache.delete(normalized);
       return;
     } catch (err) {
+      if (err instanceof AifsError) throw err;
       const status = err.code || err.response?.status;
       if (status !== 404) {
         this._handleDriveError(err, path);
@@ -1283,11 +1348,6 @@ export class GoogleDriveAdapter {
       // the file exists and the 404 was a permission signal. If the
       // re-resolve returns nothing, the file genuinely doesn't exist.
       // Closes bug 20260416-62a14c43.
-      const denialDetail =
-        'On shared drives, files are typically owned by the drive itself; ' +
-        'removing them requires the organizer or contentManager role. Ask ' +
-        'your Workspace admin to remove the file, or run this operation ' +
-        'from an account with the necessary permissions.';
       if (cached) {
         this.pathCache.delete(normalized);
         const freshId = await this._resolvePathToId(path);
@@ -1306,6 +1366,7 @@ export class GoogleDriveAdapter {
           this.pathCache.delete(normalized);
           return;
         } catch (retryErr) {
+          if (retryErr instanceof AifsError) throw retryErr;
           this._handleDriveError(retryErr, path);
           return;
         }
@@ -1844,15 +1905,29 @@ export class GoogleDriveAdapter {
    * Refresh the access token using the stored refresh token.
    */
   async _refreshToken() {
+    // a1c4: keep NotAuthenticatedError (callers rely on NOT_AUTHENTICATED),
+    // but tag it with the classified cause so getAuthStatus can report it.
+    const fail = (reason, err) => {
+      const e = new NotAuthenticatedError(`Token refresh failed: ${err?.message || err}`);
+      e.details.refresh_reason = reason;
+      e.details.refresh_detail = err?.message || String(err);
+      // Only an expired/revoked or unexplained failure needs a new sign-in; a network, TLS/proxy
+      // or local credential-write failure must not send the agent into re-auth (4.0.1 review).
+      e.details.needs_auth = (reason === 'expired' || reason === 'refresh_failed');
+      return e;
+    };
+    let credentials;
     try {
-      const { credentials } = await this.oauth2Client.refreshAccessToken();
-      this.tokens = credentials;
-      this.oauth2Client.setCredentials(credentials);
+      ({ credentials } = await this.oauth2Client.refreshAccessToken());
+    } catch (err) {
+      throw fail(classifyRefreshError(err), err);
+    }
+    this.tokens = credentials;
+    this.oauth2Client.setCredentials(credentials);
+    try {
       await this._writeCredential(credentials);
     } catch (err) {
-      throw new NotAuthenticatedError(
-        `Token refresh failed: ${err.message}`
-      );
+      throw fail('credential_write_failed', err);
     }
   }
 
