@@ -1,5 +1,11 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.11.6] — 2026-10-17 — every read checked against the file's metadata
+
+### Fixed
+- **`aifs_read` verifies non-empty reads (bug 20260928-8d20ea22-211327-733b).** Only empty reads were checked (the 2.6.0 flakyread gate); a stale or short body from an intermediate cache or a truncated response was returned as success. Every read now fetches `size`, `md5Checksum` and `mimeType` and compares the body. On a mismatch it re-reads both metadata and body with the existing backoff (`READ_RETRY_BACKOFF_MS`), then fails with `AIFS_READ_UNRELIABLE` (`details.reason`: `size_mismatch` or `checksum_mismatch`). Files without an md5 (and, defensively, native Google Docs/Sheets/Slides) are not checked, and if the metadata call itself fails on a non-empty read the read still succeeds without the check. Cost: one metadata call per read.
+- Source comments cite the developer collection's `marketplace-eligibility.md` for the file-integrity sentinel (core 4.1.0 retires `standards.md`).
+
 ## [2.11.5] — 2026-10-17 — honest auth status, delete fallback, stale-cache retry
 
 ### Fixed

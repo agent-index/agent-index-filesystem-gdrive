@@ -60335,14 +60335,27 @@ var GoogleDriveAdapter = class {
         return Buffer.from(res.data);
       };
       let buffer = await fetchBuffer();
+      const metaParams = { fileId, fields: "size,md5Checksum,mimeType" };
+      if (this.connection.drive_id)
+        metaParams.supportsAllDrives = true;
+      const fetchMeta = async () => {
+        const m = await this._withAutoRefresh(() => this.drive.files.get(metaParams));
+        const d = m && m.data || {};
+        return {
+          size: d.size === void 0 || d.size === null || d.size === "" ? null : Number(d.size),
+          md5: typeof d.md5Checksum === "string" && d.md5Checksum ? d.md5Checksum : null,
+          native: typeof d.mimeType === "string" && d.mimeType.startsWith("application/vnd.google-apps.")
+        };
+      };
+      let meta3 = null;
+      try {
+        meta3 = await fetchMeta();
+      } catch (metaErr) {
+        if (buffer.length === 0)
+          throw metaErr;
+      }
       if (buffer.length === 0) {
-        const metaParams = { fileId, fields: "size" };
-        if (this.connection.drive_id)
-          metaParams.supportsAllDrives = true;
-        const meta3 = await this._withAutoRefresh(
-          () => this.drive.files.get(metaParams)
-        );
-        const declaredSize = Number(meta3?.data?.size ?? 0);
+        const declaredSize = meta3 && meta3.size || 0;
         if (declaredSize > 0) {
           for (const delayMs of READ_RETRY_BACKOFF_MS) {
             await aifsSleep(delayMs);
@@ -60357,6 +60370,33 @@ var GoogleDriveAdapter = class {
               { path, declared_size: declaredSize, retries: READ_RETRY_BACKOFF_MS.length }
             );
           }
+        }
+      }
+      const mismatch = (buf, m) => {
+        if (!m || m.native)
+          return null;
+        if (m.size !== null && buf.length !== m.size)
+          return "size";
+        if (m.md5 && createHash("md5").update(buf).digest("hex") !== m.md5)
+          return "checksum";
+        return null;
+      };
+      let bad = mismatch(buffer, meta3);
+      if (bad) {
+        for (const delayMs of READ_RETRY_BACKOFF_MS) {
+          await aifsSleep(delayMs);
+          buffer = await fetchBuffer();
+          meta3 = await fetchMeta();
+          bad = mismatch(buffer, meta3);
+          if (!bad)
+            break;
+        }
+        if (bad) {
+          throw new AifsError(
+            "AIFS_READ_UNRELIABLE",
+            `read: content returned for "${path}" doesn't match the file's current ${bad === "size" ? "size" : "checksum"} (got ${buffer.length} bytes, metadata reports ${meta3.size} bytes; retried ${READ_RETRY_BACKOFF_MS.length}x). Stale or incomplete read \u2014 retry the operation; do NOT use this content.`,
+            { path, reason: bad === "size" ? "size_mismatch" : "checksum_mismatch", declared_size: meta3.size, received_size: buffer.length, retries: READ_RETRY_BACKOFF_MS.length }
+          );
         }
       }
       if (opts && opts.encoding === "base64") {

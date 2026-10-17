@@ -9,6 +9,7 @@
 // plan suites S1.1–S1.3 on a real Drive — these tests pin the logic.
 
 import { test } from 'node:test';
+import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
 import {
   GoogleDriveAdapter,
@@ -108,12 +109,62 @@ test('read: persistent empty for non-empty file -> AIFS_READ_UNRELIABLE', async 
   // patch the lone stat call: distinguish by params.fields
   const origGet = adapter.drive.files.get;
   adapter.drive.files.get = async (params, opts) =>
-    params.fields === 'size' ? meta(42) : origGet(params, opts);
+    params.fields ? meta(42) : origGet(params, opts);
   await assert.rejects(
     () => adapter.read('/x.md'),
     (err) => err.code === 'AIFS_READ_UNRELIABLE'
       && err.details?.retries === READ_RETRY_BACKOFF_MS.length
   );
+});
+
+// ─── read: integrity on non-empty reads (2.11.6, bug 733b) ────────────
+
+const md5hex = (str) => createHash('md5').update(Buffer.from(str)).digest('hex');
+const metaFull = (str, extra = {}) => ({ data: { size: String(Buffer.byteLength(str)), md5Checksum: md5hex(str), ...extra } });
+
+test('read: short body heals on retry (size mismatch, 733b)', async () => {
+  const { adapter, calls } = mockAdapter({
+    getImpls: [
+      () => media('hello wor'),          // truncated body
+      () => metaFull('hello world'),     // metadata: 11 bytes
+      () => media('hello world'),        // retry body
+      () => metaFull('hello world'),     // retry metadata
+    ],
+  });
+  assert.equal(await adapter.read('/x.md'), 'hello world');
+  assert.equal(calls.get, 4);
+});
+
+test('read: stale body with matching size but wrong md5 -> AIFS_READ_UNRELIABLE after retries (733b)', async () => {
+  const { adapter } = mockAdapter({});
+  adapter.drive.files.get = async (params) => (params.fields ? metaFull('new content') : media('old content'));
+  await assert.rejects(
+    () => adapter.read('/x.md'),
+    (err) => err.code === 'AIFS_READ_UNRELIABLE' && err.details?.reason === 'checksum_mismatch'
+      && err.details?.retries === READ_RETRY_BACKOFF_MS.length
+  );
+});
+
+test('read: matching size + md5 returns on the first fetch (one metadata call)', async () => {
+  const { adapter, calls } = mockAdapter({ getImpls: [() => media('abc'), () => metaFull('abc')] });
+  assert.equal(await adapter.read('/x.md'), 'abc');
+  assert.equal(calls.get, 2);
+});
+
+test('read: a failed metadata call does not fail a non-empty read (733b)', async () => {
+  const { adapter } = mockAdapter({});
+  adapter.drive.files.get = async (params) => {
+    if (params.fields) throw Object.assign(new Error('backend error'), { code: 500 });
+    return media('body');
+  };
+  assert.equal(await adapter.read('/x.md'), 'body');
+});
+
+test('read: native Google file and missing md5 are not checked (733b)', async () => {
+  const a = mockAdapter({ getImpls: [() => media('exported'), () => ({ data: { mimeType: 'application/vnd.google-apps.document' } })] });
+  assert.equal(await a.adapter.read('/doc'), 'exported');
+  const b = mockAdapter({ getImpls: [() => media('abc'), () => ({ data: { size: '3' } })] });
+  assert.equal(await b.adapter.read('/x.md'), 'abc');
 });
 
 test('read: transient NOT_FOUND re-resolves once before failing', async () => {
@@ -795,9 +846,9 @@ test('read: 404 on a cached id drops the entry, re-resolves, retries once', asyn
   adapter.drive.files.list = async () => { walks++; return { data: { files: [{ id: 'FRESH', name: 'doc.md', mimeType: 'text/plain', parents: ['ROOT'] }] } }; };
   const seen = [];
   adapter.drive.files.get = async (params) => {
-    seen.push(params.fileId);
+    if (params.alt === 'media') seen.push(params.fileId);
     if (params.fileId === 'STALE') throw errWith({ message: 'File not found', code: 404 });
-    return media('fresh content');
+    return params.fields ? { data: {} } : media('fresh content');
   };
   assert.equal(await adapter.read('/doc.md'), 'fresh content');
   assert.deepEqual(seen, ['STALE', 'FRESH']);

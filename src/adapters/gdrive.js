@@ -228,7 +228,7 @@ function _escape(s) {
  */
 // ─── Platform Reliability helpers (2.6.0) ─────────────────────────────
 //
-// File-integrity sentinel (standards.md § "File-integrity sentinel"):
+// File-integrity sentinel (developer marketplace-eligibility.md § "File-integrity sentinel"):
 // detect whether written text content carries an AIFS:FILE-END marker so
 // the write path can verify the marker survived the upload (tail-loss
 // detection at write time — FCI-1 / clicap classes).
@@ -709,17 +709,36 @@ export class GoogleDriveAdapter {
 
       let buffer = await fetchBuffer();
 
+      // Read integrity (2.11.6, bug 20260928-8d20ea22-211327-733b). Every read is checked
+      // against the file's current metadata, not only empty reads: a stale or short body
+      // (an intermediate cache holding an older revision, a truncated response) used to be
+      // returned as success. One extra metadata call per read.
+      const metaParams = { fileId, fields: 'size,md5Checksum,mimeType' };
+      if (this.connection.drive_id) metaParams.supportsAllDrives = true;
+      const fetchMeta = async () => {
+        const m = await this._withAutoRefresh(() => this.drive.files.get(metaParams));
+        const d = (m && m.data) || {};
+        return {
+          size: d.size === undefined || d.size === null || d.size === '' ? null : Number(d.size),
+          md5: typeof d.md5Checksum === 'string' && d.md5Checksum ? d.md5Checksum : null,
+          native: typeof d.mimeType === 'string' && d.mimeType.startsWith('application/vnd.google-apps.'),
+        };
+      };
+      // A failed metadata call doesn't fail a non-empty read (the body was fetched fine; only the
+      // check is skipped). An empty body still needs the metadata, so there the error propagates.
+      let meta = null;
+      try {
+        meta = await fetchMeta();
+      } catch (metaErr) {
+        if (buffer.length === 0) throw metaErr;
+      }
+
       // flakyread (2.6.0): never return empty content for a file the
       // backend says is non-empty. Empty result -> stat-gate (metadata
       // size) -> bounded retries with backoff -> explicit error. A file
       // that is GENUINELY empty (size 0) returns immediately as before.
       if (buffer.length === 0) {
-        const metaParams = { fileId, fields: 'size' };
-        if (this.connection.drive_id) metaParams.supportsAllDrives = true;
-        const meta = await this._withAutoRefresh(() =>
-          this.drive.files.get(metaParams)
-        );
-        const declaredSize = Number(meta?.data?.size ?? 0);
+        const declaredSize = (meta && meta.size) || 0;
         if (declaredSize > 0) {
           for (const delayMs of READ_RETRY_BACKOFF_MS) {
             await aifsSleep(delayMs);
@@ -733,6 +752,35 @@ export class GoogleDriveAdapter {
               { path, declared_size: declaredSize, retries: READ_RETRY_BACKOFF_MS.length }
             );
           }
+        }
+      }
+
+      // 733b: size and md5 must match the metadata. Native Google Docs/Sheets/Slides
+      // carry neither, and a missing field is not checked. On a mismatch re-read both
+      // the metadata and the body (the file may have changed between the two calls),
+      // with the same backoff; still mismatched -> AIFS_READ_UNRELIABLE.
+      const mismatch = (buf, m) => {
+        // m.native is defensive: alt=media on a Docs/Sheets/Slides file is refused before we get here.
+        if (!m || m.native) return null;
+        if (m.size !== null && buf.length !== m.size) return 'size';
+        if (m.md5 && createHash('md5').update(buf).digest('hex') !== m.md5) return 'checksum';
+        return null;
+      };
+      let bad = mismatch(buffer, meta);
+      if (bad) {
+        for (const delayMs of READ_RETRY_BACKOFF_MS) {
+          await aifsSleep(delayMs);
+          buffer = await fetchBuffer();
+          meta = await fetchMeta();
+          bad = mismatch(buffer, meta);
+          if (!bad) break;
+        }
+        if (bad) {
+          throw new AifsError(
+            'AIFS_READ_UNRELIABLE',
+            `read: content returned for "${path}" doesn't match the file's current ${bad === 'size' ? 'size' : 'checksum'} (got ${buffer.length} bytes, metadata reports ${meta.size} bytes; retried ${READ_RETRY_BACKOFF_MS.length}x). Stale or incomplete read — retry the operation; do NOT use this content.`,
+            { path, reason: bad === 'size' ? 'size_mismatch' : 'checksum_mismatch', declared_size: meta.size, received_size: buffer.length, retries: READ_RETRY_BACKOFF_MS.length }
+          );
         }
       }
 
@@ -805,7 +853,7 @@ export class GoogleDriveAdapter {
       }
     }
 
-    // Sentinel-aware write verification (2.6.0, standards.md § "File-
+    // Sentinel-aware write verification (2.6.0, developer marketplace-eligibility.md § "File-
     // integrity sentinel"): if the text content carries an AIFS:FILE-END
     // marker, verify post-write that the marker survived the upload.
     // Catches tail loss at write time (FCI-1 mount truncation, capped
