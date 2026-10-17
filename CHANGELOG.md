@@ -1,6 +1,6 @@
 # agent-index-filesystem-gdrive — Changelog
 
-## [2.11.5] — <RELEASE_DATE> — honest auth status, delete fallback, stale-cache retry
+## [2.11.5] — 2026-10-17 — honest auth status, delete fallback, stale-cache retry
 
 ### Fixed
 - **`aifs_auth_status` no longer calls every refresh failure "expired"** (bug `20260822-8d20ea22-143449-a1c4`). `reason` is `expired` (invalid_grant / revoked), `network_error`, `tls_or_proxy_error`, `credential_write_failed` or `refresh_failed`, with a `detail` message; core 4.0.1 reports the connection ones instead of restarting sign-in.
