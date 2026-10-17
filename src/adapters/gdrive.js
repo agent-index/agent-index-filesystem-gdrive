@@ -724,14 +724,21 @@ export class GoogleDriveAdapter {
           native: typeof d.mimeType === 'string' && d.mimeType.startsWith('application/vnd.google-apps.'),
         };
       };
-      let meta = await fetchMeta();
+      // A failed metadata call doesn't fail a non-empty read (the body was fetched fine; only the
+      // check is skipped). An empty body still needs the metadata, so there the error propagates.
+      let meta = null;
+      try {
+        meta = await fetchMeta();
+      } catch (metaErr) {
+        if (buffer.length === 0) throw metaErr;
+      }
 
       // flakyread (2.6.0): never return empty content for a file the
       // backend says is non-empty. Empty result -> stat-gate (metadata
       // size) -> bounded retries with backoff -> explicit error. A file
       // that is GENUINELY empty (size 0) returns immediately as before.
       if (buffer.length === 0) {
-        const declaredSize = meta.size || 0;
+        const declaredSize = (meta && meta.size) || 0;
         if (declaredSize > 0) {
           for (const delayMs of READ_RETRY_BACKOFF_MS) {
             await aifsSleep(delayMs);
@@ -753,7 +760,8 @@ export class GoogleDriveAdapter {
       // the metadata and the body (the file may have changed between the two calls),
       // with the same backoff; still mismatched -> AIFS_READ_UNRELIABLE.
       const mismatch = (buf, m) => {
-        if (m.native) return null;
+        // m.native is defensive: alt=media on a Docs/Sheets/Slides file is refused before we get here.
+        if (!m || m.native) return null;
         if (m.size !== null && buf.length !== m.size) return 'size';
         if (m.md5 && createHash('md5').update(buf).digest('hex') !== m.md5) return 'checksum';
         return null;

@@ -151,6 +151,15 @@ test('read: matching size + md5 returns on the first fetch (one metadata call)',
   assert.equal(calls.get, 2);
 });
 
+test('read: a failed metadata call does not fail a non-empty read (733b)', async () => {
+  const { adapter } = mockAdapter({});
+  adapter.drive.files.get = async (params) => {
+    if (params.fields) throw Object.assign(new Error('backend error'), { code: 500 });
+    return media('body');
+  };
+  assert.equal(await adapter.read('/x.md'), 'body');
+});
+
 test('read: native Google file and missing md5 are not checked (733b)', async () => {
   const a = mockAdapter({ getImpls: [() => media('exported'), () => ({ data: { mimeType: 'application/vnd.google-apps.document' } })] });
   assert.equal(await a.adapter.read('/doc'), 'exported');
