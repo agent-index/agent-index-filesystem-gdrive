@@ -28,6 +28,7 @@ import {
   FileNotFoundError,
   PathNotFoundError,
 } from '@agent-index/filesystem/errors';
+import { argWarnings } from './arg-warnings.mjs';
 import { GoogleDriveAdapter } from './adapters/gdrive.js';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
@@ -442,6 +443,12 @@ async function main() {
   // paths. Normalize before handing off to the adapter so the user sees
   // "PATH_NOT_FOUND" instead of a silent miss through the path cache.
   toolArgs = normalizePathArgs(toolArgs);
+
+  // CI-018 Phase 1: name ignored arguments on stderr (stdout stays the tool's
+  // output, byte-exact for aifs_read). The call still runs exactly as before.
+  for (const w of argWarnings(toolName, toolArgs)) {
+    process.stderr.write(`aifs-exec: warning: ${w}\n`);
+  }
 
   // Initialize environment (proxy/TLS)
   initEnvironment();
