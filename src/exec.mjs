@@ -387,7 +387,7 @@ async function main() {
         'aifs_stat_batch',
       ],
       // Argument signatures, kept in step with routeToolCall above.
-      // "?" = optional. Unknown arguments are ignored without an error.
+      // "?" = optional. An unknown argument is ignored, with a warning on stderr.
       arguments: {
         aifs_read: '{path}',
         aifs_write: '{path, content | content_file | content_stdin, encoding?, if_revision?}',
@@ -446,9 +446,12 @@ async function main() {
 
   // CI-018 Phase 1: name ignored arguments on stderr (stdout stays the tool's
   // output, byte-exact for aifs_read). The call still runs exactly as before.
-  for (const w of argWarnings(toolName, toolArgs)) {
-    process.stderr.write(`aifs-exec: warning: ${w}\n`);
-  }
+  // A warning must never break a call: if building or printing one fails, the call runs anyway.
+  try {
+    for (const w of argWarnings(toolName, toolArgs)) {
+      process.stderr.write(`aifs-exec: warning: ${w}\n`);
+    }
+  } catch { /* warnings are best-effort */ }
 
   // Initialize environment (proxy/TLS)
   initEnvironment();

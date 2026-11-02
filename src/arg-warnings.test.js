@@ -63,6 +63,12 @@ test('unknown tools and odd inputs produce no warnings and never throw', () => {
   assert.deepEqual(argWarnings('aifs_write_batch', { entries: 'not-an-array' }), []);
 });
 
+test('tool names that are Object.prototype keys produce no warnings and never throw', () => {
+  for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'valueOf']) {
+    assert.deepEqual(argWarnings(name, { x: 1 }), [], name);
+  }
+});
+
 test('TOOL_ARGS matches what routeToolCall in exec.mjs actually reads', () => {
   const src = readFileSync(join(here, 'exec.mjs'), 'utf8');
   const start = src.search(/function\s+routeToolCall\s*\(/);

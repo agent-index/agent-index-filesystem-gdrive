@@ -51,7 +51,9 @@ export function contentSources(a) {
  * already fails them with UNKNOWN_TOOL.
  */
 export function argWarnings(toolName, args) {
-  const known = TOOL_ARGS[toolName];
+  // Own keys only: a tool name like "constructor", "__proto__" or "toString" must not
+  // pick up an inherited Object.prototype property.
+  const known = Object.hasOwn(TOOL_ARGS, toolName) ? TOOL_ARGS[toolName] : undefined;
   if (!known || !args || typeof args !== 'object' || Array.isArray(args)) return [];
   const warnings = [];
 
