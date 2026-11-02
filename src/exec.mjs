@@ -388,7 +388,7 @@ async function main() {
       // Argument signatures, kept in step with routeToolCall above.
       // "?" = optional. Unknown arguments are ignored without an error.
       arguments: {
-        aifs_read: '{path}',
+        aifs_read: '{path, encoding?: "base64"}',
         aifs_write: '{path, content | content_file | content_stdin, encoding?, if_revision?}',
         aifs_list: '{path, recursive?}',
         aifs_exists: '{path}',
@@ -408,6 +408,7 @@ async function main() {
       notes: [
         'aifs_write: give exactly one of content, content_file, content_stdin. Inline content is bounded by the OS argument limit (~128 KiB); content_file and content_stdin have no size limit. If more than one is given, content wins, then content_file, then content_stdin.',
         'encoding "base64": a content_file/content_stdin payload is taken as raw bytes (use for binary files; otherwise it is read as UTF-8). An inline content string must itself be base64.',
+        'aifs_read encoding "base64": always return the base64: form, even for content that would decode as text (use it to read binary files byte-exact).',
         'if_revision: revision from aifs_stat; the write fails with REVISION_CONFLICT if the file has changed since.',
         'aifs_search: without name_contains nothing is filtered — an arbitrary, unordered page of up to max_results (default 100, max 1000) items under scope.',
       ],

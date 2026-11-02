@@ -82,7 +82,7 @@ Tools and their JSON arguments (? = optional). Unknown arguments are
 ignored without an error, so a misspelled name silently does nothing.
 
   aifs_read                Read file content
-                             {path}
+                             {path, encoding?: "base64"}
   aifs_write               Write file content
                              {path, content | content_file | content_stdin, encoding?, if_revision?}
   aifs_list                List directory contents
