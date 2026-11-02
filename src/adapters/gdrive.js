@@ -1195,7 +1195,7 @@ export class GoogleDriveAdapter {
         if (!isMember) {
           throw new AifsError(
             'AIFS_ROOT_NOT_ENUMERABLE',
-            `list("${path}"): the Shared Drive root is not enumerable by a non-Drive-member — an empty result here does NOT mean the drive is empty. Address specific items by id-anchor (e.g. the folder_ids in org-config.json, or id:{fileId} from search), not by listing the root.`,
+            `list("${path}"): the Shared Drive root is not enumerable by a non-Drive-member — an empty result here does NOT mean the drive is empty. List a folder you can reach instead, by plain path (for example /shared or /{collection}).`,
             { path, reason: 'non_drive_member_root_listing' }
           );
         }
@@ -1475,6 +1475,37 @@ export class GoogleDriveAdapter {
       });
     } catch (err) {
       this._handleDriveError(err, source);
+    }
+  }
+
+  // ─── Org path seeding (CI-025, 2.12.0) ──────────────────────────────
+
+  /**
+   * Seed the path cache with the org's top-level locations from the org map
+   * (shared library org-map.js): "/shared" -> shared_root id, "/{collection}" ->
+   * folder_id, "/org-config.json" -> org_config_id, "/members-registry.json" ->
+   * registry id. _resolvePathToId and _ensureParentDirsInner check the cache at
+   * every segment, so a member who isn't on the Shared Drive resolves every org
+   * path from the seeded folder without querying the drive root (technical
+   * design §0, §2.6). When a seeded id differs from the id cached for that path
+   * (a collection reinstalled), every cached entry under it is purged first.
+   */
+  seedOrgPrefixes(prefixes) {
+    if (!prefixes || typeof prefixes !== 'object') return;
+    for (const [prefix, entry] of Object.entries(prefixes)) {
+      if (!entry || !entry.id) continue;
+      const key = this._normalizePath(prefix);
+      const existing = this.pathCache.get(key);
+      if (existing && existing.id !== entry.id) {
+        const under = key + '/';
+        for (const k of [...this.pathCache.keys()]) {
+          if (k === key || k.startsWith(under)) this.pathCache.delete(k);
+        }
+      }
+      const mimeType = entry.kind === 'folder'
+        ? 'application/vnd.google-apps.folder'
+        : (existing && existing.id === entry.id && existing.mimeType) || 'application/octet-stream';
+      this.pathCache.set(key, { id: entry.id, mimeType });
     }
   }
 
@@ -2505,10 +2536,14 @@ export class GoogleDriveAdapter {
    */
   _idToPath(fileId) {
     if (!fileId) return null;
+    // CI-025: prefer a plain path over an id: key for the same item.
+    let anchored = null;
     for (const [path, entry] of this.pathCache) {
-      if (entry?.id === fileId) return path;
+      if (entry?.id !== fileId) continue;
+      if (!path.startsWith('id:')) return path;
+      if (!anchored) anchored = path;
     }
-    return null;
+    return anchored;
   }
 
   /**
@@ -2714,7 +2749,18 @@ export class GoogleDriveAdapter {
       // cross-drive hit (e.g. library find-doc on a doc another member shared)
       // got FILE_NOT_FOUND. Always include the raw `id` so callers can address
       // the result unambiguously regardless of path.
-      const path = this._idToPath(f.id) || `id:${f.id}`;
+      // CI-025: a scoped search returns direct children of the scope, so under a
+      // plain scope the result's plain path is known: {scope}/{name}. Cache it so
+      // a following read resolves it without a walk.
+      let path;
+      // A name containing "/" cannot be a path segment; fall back to its id.
+      if (parentId && !scope.startsWith('id:') && !String(f.name).includes('/')) {
+        const base = this._normalizePath(scope);
+        path = base === '/' ? `/${f.name}` : `${base}/${f.name}`;
+        if (!this.pathCache.has(path)) this.pathCache.set(path, { id: f.id, mimeType: f.mimeType });
+      } else {
+        path = this._idToPath(f.id) || `id:${f.id}`;
+      }
       const isFolder = f.mimeType === 'application/vnd.google-apps.folder';
       results.push({
         path,

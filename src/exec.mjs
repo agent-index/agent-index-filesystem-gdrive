@@ -22,7 +22,25 @@
  *   - Individual call failures are immediate and visible
  */
 
-import { initEnvironment, loadConfig } from '@agent-index/filesystem';
+import {
+  initEnvironment,
+  loadConfig,
+  // CI-025 (shared library 2.3.0): org path resolution and session state.
+  resolveOrgMap,
+  canonicalizeArgs,
+  touchesMappedPrefix,
+  isProtectedOrgPath,
+  missingSegments,
+  needsOrgMap,
+  IDEMPOTENT_TOOLS,
+  readPendingAuth,
+  writePendingAuth,
+  clearPendingAuth,
+  reusedAuthResponse,
+  writeIdentity,
+  readIdentity,
+  bootstrapState,
+} from '@agent-index/filesystem';
 import {
   AifsError,
   FileNotFoundError,
@@ -61,10 +79,16 @@ function stripDebugFields(value) {
 function normalizePathArgs(args) {
   if (!args || typeof args !== 'object') return args;
   const out = { ...args };
-  for (const key of ['path', 'source', 'destination']) {
+  for (const key of ['path', 'source', 'destination', 'scope']) {
     if (typeof out[key] === 'string') {
       out[key] = out[key].replace(/\\/g, '/');
     }
+  }
+  if (Array.isArray(out.entries)) {
+    out.entries = out.entries.map((e) => (e && typeof e.path === 'string' ? { ...e, path: e.path.replace(/\\/g, '/') } : e));
+  }
+  if (Array.isArray(out.paths)) {
+    out.paths = out.paths.map((p) => (typeof p === 'string' ? p.replace(/\\/g, '/') : p));
   }
   return out;
 }
@@ -98,7 +122,11 @@ async function loadPathCache(credentialStore, driveId) {
       return new Map();
     }
 
-    return new Map(Object.entries(data.entries || {}));
+    const map = new Map(Object.entries(data.entries || {}));
+    // CI-025: remember when this cache was first written, so saving it again
+    // doesn't keep pushing its 30-minute expiry forward for an active member.
+    map._createdAt = typeof data.timestamp === 'number' ? data.timestamp : Date.now();
+    return map;
   } catch {
     return new Map();
   }
@@ -108,7 +136,7 @@ async function loadPathCache(credentialStore, driveId) {
  * Persist the path cache to disk.
  * Prunes to MAX_ENTRIES if needed.
  */
-async function savePathCache(credentialStore, pathCache, driveId) {
+async function savePathCache(credentialStore, pathCache, driveId, createdAt = Date.now()) {
   const cachePath = join(credentialStore, PATH_CACHE_FILENAME);
   const entries = {};
   let count = 0;
@@ -122,7 +150,7 @@ async function savePathCache(credentialStore, pathCache, driveId) {
   const data = {
     schema: PATH_CACHE_SCHEMA,
     drive_id: driveId || null,
-    timestamp: Date.now(),
+    timestamp: createdAt,
     entries,
   };
 
@@ -169,7 +197,7 @@ function requireArgs(toolName, args, required) {
   }
 }
 
-async function routeToolCall(adapter, toolName, args) {
+async function routeToolCall(adapter, toolName, args, ctx = {}) {
   switch (toolName) {
     case 'aifs_read':
       requireArgs(toolName, args, [['path', 'path']]);
@@ -253,8 +281,21 @@ async function routeToolCall(adapter, toolName, args) {
       return { success: true };
     }
 
-    case 'aifs_auth_status':
-      return adapter.getAuthStatus();
+    case 'aifs_auth_status': {
+      // CI-025 (§5): also report the bootstrap state, from local files only,
+      // so a session whose start hook didn't fire can learn it from its first call.
+      const status = await adapter.getAuthStatus();
+      let email = status?.user_identity && status.user_identity !== 'unknown' ? status.user_identity : null;
+      if (email && ctx.credentialStore) await writeIdentity(ctx.credentialStore, email);
+      if (!email && ctx.credentialStore) email = await readIdentity(ctx.credentialStore);
+      const b = bootstrapState({ configPath: process.env.AIFS_CONFIG_PATH, authenticated: !!status?.authenticated, email });
+      return {
+        ...status,
+        bootstrap: b.bootstrap,
+        ...(b.member_hash ? { member_hash: b.member_hash } : {}),
+        ...(b.reason ? { bootstrap_reason: b.reason } : {}),
+      };
+    }
 
     case 'aifs_authenticate': {
       // pkcerestart (bug 20260615-8d20ea22-pkcerestart) + memberauthbootstrap
@@ -266,9 +307,22 @@ async function routeToolCall(adapter, toolName, args) {
       // this since the pkcerestart fix; this ports the same guard to gdrive.
       const action = args.action || (args.auth_code ? 'complete' : 'start');
       if (action === 'start') {
-        return adapter.startAuth();
+        // CI-025 (§4): a second start returns the sign-in already in progress
+        // (under 10 minutes old) instead of a new link, unless force:true.
+        if (!args.force && ctx.credentialStore) {
+          const pending = await readPendingAuth(ctx.credentialStore);
+          if (pending) return reusedAuthResponse(pending);
+        }
+        const started = await adapter.startAuth();
+        if (ctx.credentialStore && started?.auth_url) await writePendingAuth(ctx.credentialStore, started);
+        return started;
       } else if (action === 'complete') {
-        return adapter.completeAuth(args.auth_code);
+        const done = await adapter.completeAuth(args.auth_code);
+        if (ctx.credentialStore) {
+          await clearPendingAuth(ctx.credentialStore);
+          if (done?.user_identity) await writeIdentity(ctx.credentialStore, done.user_identity);
+        }
+        return done;
       }
       throw new AifsError('INVALID_ARGS', `Unknown auth action: ${action}`, {
         tool: toolName,
@@ -396,7 +450,7 @@ async function main() {
         aifs_delete: '{path}',
         aifs_copy: '{source, destination}',
         aifs_auth_status: '{}',
-        aifs_authenticate: '{action?: "start"|"complete", auth_code?}',
+        aifs_authenticate: '{action?: "start"|"complete", auth_code?, force?}',
         aifs_share: '{path, subject, role, inherit?}',
         aifs_unshare: '{path, subject}',
         aifs_get_permissions: '{path, include_inherited?}',
@@ -410,6 +464,10 @@ async function main() {
         'encoding "base64": a content_file/content_stdin payload is taken as raw bytes (use for binary files; otherwise it is read as UTF-8). An inline content string must itself be base64.',
         'if_revision: revision from aifs_stat; the write fails with REVISION_CONFLICT if the file has changed since.',
         'aifs_search: without name_contains nothing is filtered — an arbitrary, unordered page of up to max_results (default 100, max 1000) items under scope.',
+        'Org locations are addressed by plain path on every backend: /org-config.json, /members-registry.json, /shared/..., /{collection}/... The executor finds them from org-config (2.12.0). id: addresses still work and pass through unchanged.',
+        'aifs_authenticate start: returns the sign-in already in progress (under 10 minutes old) instead of a new link; pass force:true to start over.',
+        'aifs_auth_status: includes bootstrap (ready | needs_auth | needs_setup) and member_hash, from local state.',
+        'aifs_delete refuses an org root itself (the shared root, a collection folder, org-config, the registry): PROTECTED_ORG_PATH.',
       ],
       examples: [
         'aifs-exec aifs_read \'{"path":"/projects/foo/project.md"}\'',
@@ -480,16 +538,70 @@ async function main() {
   }
 
   // Load persisted path cache into adapter
-  const cachedPaths = await loadPathCache(config.auth.credentialStore, config.connection?.drive_id);
+  const credentialStore = config.auth.credentialStore;
+  const driveId = config.connection?.drive_id;
+  const cachedPaths = await loadPathCache(credentialStore, driveId);
+  const cacheCreatedAt = cachedPaths._createdAt || Date.now();
   for (const [path, entry] of cachedPaths) {
     if (!adapter.pathCache.has(path)) {
       adapter.pathCache.set(path, entry);
     }
   }
 
+  // CI-025 (technical design §2-§3): org path resolution. Build or load the org
+  // map from org-config and seed the adapter, so plain org paths resolve without
+  // walking the drive root. resolveOrgMap NEVER throws; with no map the call
+  // runs exactly as before 2.12.0.
+  const warn = (m) => { try { process.stderr.write(m + '\n'); } catch { /* ignore */ } };
+  let orgMap = null;
+  let orgMapReason = null;
+  if (needsOrgMap(toolName, toolArgs)) {
+    try {
+      const ctx = { config, adapter, credentialStore, warn };
+      let r = await resolveOrgMap(ctx);
+      orgMap = r.map;
+      if (!orgMap) {
+        orgMapReason = r.reason;
+        warn(`aifs: org map unavailable (${r.reason}); paths resolved without it`);
+      } else {
+        for (const seg of missingSegments(orgMap, toolName, toolArgs)) {
+          r = await resolveOrgMap({ ...ctx, mode: 'missing-prefix', segment: seg });
+          if (r.map) orgMap = r.map;
+        }
+        toolArgs = canonicalizeArgs(orgMap, toolName, toolArgs);
+        adapter.seedOrgPrefixes(orgMap.prefixes);
+      }
+    } catch (err) {
+      // Never let org path resolution fail a call (technical design §2.5).
+      orgMap = null;
+      orgMapReason = `org_map_error:${err?.message || 'error'}`;
+      warn(`aifs: org map unavailable (${orgMapReason}); paths resolved without it`);
+    }
+  }
+
   // Execute the tool call
+  let exitCode = 0;
   try {
-    const result = await routeToolCall(adapter, toolName, toolArgs);
+    if (toolName === 'aifs_delete' && orgMap && isProtectedOrgPath(orgMap, toolArgs?.path)) {
+      throw new AifsError('PROTECTED_ORG_PATH',
+        `aifs_delete refused: "${toolArgs.path}" is an org root (the shared root, a collection folder, org-config or the members registry).`,
+        { path: toolArgs.path });
+    }
+    let result;
+    try {
+      result = await routeToolCall(adapter, toolName, toolArgs, { credentialStore });
+    } catch (err) {
+      // §2.4 rule 3: a not-found under a mapped prefix on an idempotent call —
+      // if org-config changed (a collection reinstalled, resource_ids back-filled),
+      // rebuild the map, re-seed and retry once. Otherwise report as is.
+      const notFound = err?.code === 'FILE_NOT_FOUND' || err?.code === 'PATH_NOT_FOUND';
+      if (!(orgMap && notFound && IDEMPOTENT_TOOLS.has(toolName) && touchesMappedPrefix(orgMap, toolName, toolArgs))) throw err;
+      const r = await resolveOrgMap({ config, adapter, credentialStore, mode: 'not-found', warn });
+      if (!r.rebuilt || !r.map) throw err;
+      orgMap = r.map;
+      adapter.seedOrgPrefixes(orgMap.prefixes);
+      result = await routeToolCall(adapter, toolName, toolArgs, { credentialStore });
+    }
     const stripped = typeof result === 'string' ? result : stripDebugFields(result);
     if (typeof stripped === 'string') {
       // F4 (2.6.0, bug 20260604-…-2837): file content is emitted byte-exact.
@@ -501,24 +613,29 @@ async function main() {
       console.log(JSON.stringify(stripped, null, 2));
     }
   } catch (err) {
+    exitCode = 1;
     if (err instanceof AifsError) {
-      console.log(JSON.stringify(stripDebugFields(err.toResponse()), null, 2));
-      process.exit(1);
+      const resp = stripDebugFields(err.toResponse());
+      // §2.5: a call that ran without the org map and still failed says why the map was missing.
+      if (orgMapReason && resp && typeof resp === 'object') resp.org_map = orgMapReason;
+      console.log(JSON.stringify(resp, null, 2));
+    } else {
+      // Include whichever path the caller passed so ENOENT / EACCES errors
+      // don't leave Claude guessing what failed.
+      const attemptedPath = toolArgs?.path || toolArgs?.source || toolArgs?.destination;
+      console.log(JSON.stringify({
+        error: 'BACKEND_ERROR',
+        message: err.message,
+        ...(attemptedPath ? { path: attemptedPath } : {}),
+      }, null, 2));
     }
-    // Include whichever path the caller passed so ENOENT / EACCES errors
-    // don't leave Claude guessing what failed.
-    const attemptedPath = toolArgs?.path || toolArgs?.source || toolArgs?.destination;
-    console.log(JSON.stringify({
-      error: 'BACKEND_ERROR',
-      message: err.message,
-      ...(attemptedPath ? { path: attemptedPath } : {}),
-    }, null, 2));
-    process.exit(1);
   } finally {
     // Always persist the path cache, even on error — partial resolution
-    // results are still valuable for the next call
-    await savePathCache(config.auth.credentialStore, adapter.pathCache, config.connection?.drive_id);
+    // results are still valuable for the next call. (CI-025: the error path
+    // used to process.exit() inside catch, which skipped this.)
+    await savePathCache(credentialStore, adapter.pathCache, driveId, cacheCreatedAt);
   }
+  if (exitCode) process.exit(exitCode);
 }
 
 main();

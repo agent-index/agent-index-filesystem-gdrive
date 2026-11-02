@@ -1,5 +1,25 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.12.0] — <RELEASE_DATE> — org locations by plain path (CI-025)
+
+Requires shared library `@agent-index/filesystem` 2.3.0 (bundled). Pairs with core 4.2.0.
+
+### Added
+- **Org paths resolve for every member (CI-025).** The executor builds a map of the org's top-level locations from org-config (`/org-config.json`, `/members-registry.json`, the shared root, each installed collection's folder), keeps it in `{credential_store}/org-map.json`, and seeds the path cache with it before each call. A member who isn't on the Shared Drive now reads and writes `/shared/...` and `/{collection}/...` by plain path without any drive-root query. Each folder in the map is checked to be in the org's drive; the map is rebuilt only when org-config changes. With no map (no `org_config_id` yet, or org-config unreadable) calls run exactly as before, with a note on stderr. `id:` addresses pass through unchanged.
+- **`aifs_auth_status` reports `bootstrap`** (`ready`, `needs_auth`, `needs_setup`) and `member_hash`, from local state; the signed-in identity is saved to `{credential_store}/identity.json`.
+- **`aifs_authenticate start` reuses a sign-in in progress** (under 10 minutes old) instead of issuing a new link; `force: true` starts over.
+- **`aifs_delete` refuses an org root itself** (the shared root, a collection folder, org-config, the registry) with `PROTECTED_ORG_PATH`.
+
+### Changed
+- Search under a plain scope returns plain paths (`{scope}/{name}`) and caches them; `_idToPath` prefers a plain path over an `id:` key.
+- The non-member root-listing error points to plain paths (`/shared`, `/{collection}`) instead of id anchors.
+- The path cache keeps its first-written time, so its 30-minute expiry applies to an active member again.
+- Caches are saved after an error too (the error path used to exit before saving).
+- `scope` and batch entries are normalized like other path arguments.
+
+### Correction to 2.11.6
+- The read check's error carries `reason` (`size_mismatch` or `checksum_mismatch`) at the top level of the response, not under `details`.
+
 ## [2.11.6] — 2026-10-17 — every read checked against the file's metadata
 
 ### Fixed

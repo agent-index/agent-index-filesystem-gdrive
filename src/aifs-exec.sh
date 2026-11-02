@@ -98,7 +98,7 @@ ignored without an error, so a misspelled name silently does nothing.
   aifs_auth_status         Check authentication state
                              {}
   aifs_authenticate        Initiate/complete OAuth flow
-                             {action?: "start" | "complete", auth_code?}
+                             {action?: "start" | "complete", auth_code?, force?}
   aifs_share               Grant access to a path
                              {path, subject, role, inherit?}
   aifs_unshare             Remove access from a path
@@ -128,6 +128,15 @@ aifs_write content — give exactly one:
 
 aifs_search: without name_contains nothing is filtered — you get an arbitrary,
 unordered page of up to max_results (default 100, max 1000) items under scope.
+
+Org locations: use plain paths on every backend — /org-config.json,
+/members-registry.json, /shared/..., /{collection}/... The executor finds them
+from org-config. id: addresses still work and pass through unchanged.
+
+aifs_authenticate start returns the sign-in already in progress (under 10
+minutes old); pass force:true to start over. aifs_auth_status reports
+bootstrap (ready | needs_auth | needs_setup) and member_hash from local state.
+aifs_delete refuses an org root itself (PROTECTED_ORG_PATH).
 
 Examples:
   aifs-exec.sh aifs_read '{"path":"/projects/foo/project.md"}'
