@@ -1,5 +1,12 @@
 # agent-index-filesystem-gdrive — Changelog
 
+## [2.11.7] — 2026-11-08 — no startup lock sweep (calls ~4x faster on Cowork)
+
+### Fixed
+- **Every call read every lock file ever written (bug `locksweepcost`, CodePath live round 3, R3-A10).** On start the adapter swept `credentials/locks/`, reading each lock file to release ones left by dead processes. On a Cowork mount unlink is refused, so released locks are never deleted: one file stays per folder path ever written, each read costs ~13 ms, and after a few weeks a call spent ~3 s of its ~4.4 s there (237 files on the Dev Three admin install; the operator's grows by about one per proposal). The sweep is gone; a lock is judged only when an acquire meets it. A call now takes ~0.9 s (measured on Dev Three, all 237 files present).
+- **Locks left by killed processes with a reused PID are breakable (`lockpidreuse`).** Sandboxes give every invocation the same small PID, so a lock from a killed earlier process looked like this process's own and waited out the 30 s stale timeout. Lock files now carry a per-process `nonce`; a lock with our PID and another nonce (or none) is from a dead process. `lockIsBreakable` (exported) decides: released, reused PID, dead PID, or stale.
+- Two tests added (suite 61/61).
+
 ## [2.11.6] — 2026-10-17 — every read checked against the file's metadata
 
 ### Fixed
