@@ -4,7 +4,7 @@ import {
   readFileSync as fsReadFileSync,
   readdirSync as fsReaddirSync,
 } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { Readable } from 'node:stream';
 import { dirname, join } from 'node:path';
@@ -46,8 +46,16 @@ const LOCK_TIMEOUT_MS = 60_000;
 const _heldLockFiles = new Set();
 let _exitHandlersInstalled = false;
 
+/**
+ * This process's identity in the lock files it writes (2.11.7, bug lockpidreuse). In a sandbox
+ * (Cowork) every invocation can get the same small PID, so a PID alone can't tell a lock left by a
+ * killed earlier process from one this process holds: a lock whose PID is ours but whose nonce
+ * isn't was left by a dead process.
+ */
+export const PROC_NONCE = randomUUID();
+
 function _releaseAllHeldLocksSync() {
-  const marker = JSON.stringify({ pid: process.pid, ts: Date.now(), released: true });
+  const marker = JSON.stringify({ pid: process.pid, nonce: PROC_NONCE, ts: Date.now(), released: true });
   for (const lockFile of _heldLockFiles) {
     try {
       // Overwrite with a "released" marker instead of deleting. In
@@ -105,6 +113,20 @@ function _installExitHandlers() {
  * means the lock isn't ours to break) and false on ESRCH (no such
  * process, safe to break).
  */
+/**
+ * Whether a lock file's holder may still be running: not if it was released, not if its PID is
+ * ours under another nonce (an earlier process with a reused PID, bug lockpidreuse), not if its
+ * PID is dead, not if it is older than LOCK_STALE_MS.
+ */
+export function lockIsBreakable(info, now = Date.now()) {
+  if (!info || typeof info !== 'object') return true;
+  if (info.released === true) return true;
+  if (info.pid === process.pid && info.nonce !== PROC_NONCE) return true;
+  if (typeof info.pid === 'number' && info.pid !== process.pid && !_isPidAlive(info.pid)) return true;
+  if (typeof info.ts !== 'number' || now - info.ts > LOCK_STALE_MS) return true;
+  return false;
+}
+
 function _isPidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   if (pid === process.pid) return true;
@@ -361,11 +383,11 @@ export class GoogleDriveAdapter {
     // one set of handlers.
     _installExitHandlers();
 
-    // Sweep any locks left behind by dead processes (previous crashed
-    // invocations, hung Node processes that got SIGTERM'd, etc.).
-    // Non-fatal if it fails — the per-acquire staleness check still
-    // runs as a backstop.
-    await this._sweepDeadLocks();
+    // 2.11.7 (bug locksweepcost): no startup sweep of the lock directory. It read every lock file
+    // ever written, and on a Cowork mount (where unlink is refused, so released locks are never
+    // deleted, and each read is ~13 ms) it cost ~3 s per call after a few weeks and kept growing.
+    // A lock is now judged when it's met (_acquirePathLock → lockIsBreakable), which with the
+    // per-process nonce also catches locks left by killed processes with a reused PID.
 
     // Try to load stored credentials
     try {
@@ -2024,7 +2046,7 @@ export class GoogleDriveAdapter {
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
 
     while (Date.now() < deadline) {
-      const lockContent = JSON.stringify({ pid: process.pid, ts: Date.now() });
+      const lockContent = JSON.stringify({ pid: process.pid, nonce: PROC_NONCE, ts: Date.now() });
 
       // ── Fast path: try atomic create ──────────────────────────────
       try {
@@ -2043,18 +2065,9 @@ export class GoogleDriveAdapter {
         const content = await readFile(lockFile, 'utf-8');
         const info = JSON.parse(content);
 
-        // A lock is breakable if:
-        //   (a) It was explicitly released (overwrite-based release).
-        //   (b) Its holder PID is dead — process will never release.
-        //   (c) Its timestamp is older than LOCK_STALE_MS — paranoid
-        //       fallback for PID-recycled edge cases.
-        if (info.released === true) {
-          breakable = true;
-        } else if (typeof info.pid === 'number' && !_isPidAlive(info.pid)) {
-          breakable = true;
-        } else if (Date.now() - info.ts > LOCK_STALE_MS) {
-          breakable = true;
-        }
+        // Breakable if released, left by a dead process (including one with our reused PID),
+        // or stale: see lockIsBreakable.
+        breakable = lockIsBreakable(info);
       } catch {
         // Lock file disappeared (race) or unreadable — treat as
         // breakable so we retry the atomic create on the next loop.
@@ -2095,7 +2108,7 @@ export class GoogleDriveAdapter {
    */
   async _releasePathLock(lockFilePath) {
     _heldLockFiles.delete(lockFilePath);
-    const marker = JSON.stringify({ pid: process.pid, ts: Date.now(), released: true });
+    const marker = JSON.stringify({ pid: process.pid, nonce: PROC_NONCE, ts: Date.now(), released: true });
     try {
       await writeFile(lockFilePath, marker);
     } catch {
@@ -2103,57 +2116,6 @@ export class GoogleDriveAdapter {
     }
   }
 
-  /**
-   * Best-effort startup sweep: walks _lockDir and marks any stale or
-   * dead-PID lock file as released. This catches the case where a
-   * previous invocation was killed (SIGTERM from a Bash timeout, OOM,
-   * etc.) before the exit handlers could run, leaving stale locks that
-   * would otherwise block writes for 30s each.
-   *
-   * Uses overwrite (not unlink) so it works in sandbox environments
-   * where unlink returns EPERM.
-   *
-   * Errors are swallowed — a failed sweep just means the per-call
-   * staleness check has to do the work instead.
-   */
-  async _sweepDeadLocks() {
-    if (!this._lockDir) return;
-    let entries;
-    try {
-      entries = await readdir(this._lockDir);
-    } catch {
-      return;
-    }
-    const releasedMarker = JSON.stringify({ pid: process.pid, ts: Date.now(), released: true });
-    for (const name of entries) {
-      if (!name.endsWith('.lock')) continue;
-      const lockFile = join(this._lockDir, name);
-      try {
-        const content = await readFile(lockFile, 'utf-8');
-        const info = JSON.parse(content);
-
-        // Skip already-released locks — nothing to do.
-        if (info.released === true) continue;
-
-        const pidDead = typeof info.pid !== 'number' || !_isPidAlive(info.pid);
-        const tsStale = typeof info.ts !== 'number' || (Date.now() - info.ts) > LOCK_STALE_MS;
-        if (pidDead || tsStale) {
-          try {
-            await writeFile(lockFile, releasedMarker);
-          } catch {
-            // Best effort.
-          }
-        }
-      } catch {
-        // Unreadable / malformed — assume stale and mark released.
-        try {
-          await writeFile(lockFile, releasedMarker);
-        } catch {
-          // ignore
-        }
-      }
-    }
-  }
 
   // ─── Helpers ──────────────────────────────────────────────────────────
 
