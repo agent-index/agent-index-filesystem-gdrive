@@ -1,6 +1,6 @@
 # agent-index-filesystem-gdrive — Changelog
 
-## [2.11.7] — 2026-11-11 — warnings for ignored arguments
+## [2.11.7] — 2026-11-10 — warnings for ignored arguments
 
 Pairs with agent-index-core 4.1.1.
 
