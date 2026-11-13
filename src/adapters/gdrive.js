@@ -47,7 +47,7 @@ const _heldLockFiles = new Set();
 let _exitHandlersInstalled = false;
 
 /**
- * This process's identity in the lock files it writes (2.11.7, bug lockpidreuse). In a sandbox
+ * This process's identity in the lock files it writes (2.11.8, bug lockpidreuse). In a sandbox
  * (Cowork) every invocation can get the same small PID, so a PID alone can't tell a lock left by a
  * killed earlier process from one this process holds: a lock whose PID is ours but whose nonce
  * isn't was left by a dead process.
@@ -105,15 +105,6 @@ function _installExitHandlers() {
 }
 
 /**
- * Returns true if a process with the given PID is currently alive on
- * this machine. Uses the 0-signal kill trick: it performs the
- * permission/existence check without actually delivering a signal.
- *
- * Returns true on EPERM (process exists but we don't own it — still
- * means the lock isn't ours to break) and false on ESRCH (no such
- * process, safe to break).
- */
-/**
  * Whether a lock file's holder may still be running: not if it was released, not if its PID is
  * ours under another nonce (an earlier process with a reused PID, bug lockpidreuse), not if its
  * PID is dead, not if it is older than LOCK_STALE_MS.
@@ -127,6 +118,15 @@ export function lockIsBreakable(info, now = Date.now()) {
   return false;
 }
 
+/**
+ * Returns true if a process with the given PID is currently alive on
+ * this machine. Uses the 0-signal kill trick: it performs the
+ * permission/existence check without actually delivering a signal.
+ *
+ * Returns true on EPERM (process exists but we don't own it — still
+ * means the lock isn't ours to break) and false on ESRCH (no such
+ * process, safe to break).
+ */
 function _isPidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   if (pid === process.pid) return true;
@@ -383,7 +383,7 @@ export class GoogleDriveAdapter {
     // one set of handlers.
     _installExitHandlers();
 
-    // 2.11.7 (bug locksweepcost): no startup sweep of the lock directory. It read every lock file
+    // 2.11.8 (bug locksweepcost): no startup sweep of the lock directory. It read every lock file
     // ever written, and on a Cowork mount (where unlink is refused, so released locks are never
     // deleted, and each read is ~13 ms) it cost ~3 s per call after a few weeks and kept growing.
     // A lock is now judged when it's met (_acquirePathLock → lockIsBreakable), which with the

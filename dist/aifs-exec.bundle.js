@@ -59956,7 +59956,7 @@ import {
   readFileSync as fsReadFileSync,
   readdirSync as fsReaddirSync
 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer as createServer2 } from "node:http";
 import { Readable } from "node:stream";
 import { dirname as dirname2, join } from "node:path";
@@ -59966,8 +59966,9 @@ var LOCK_POLL_MS = 100;
 var LOCK_TIMEOUT_MS = 6e4;
 var _heldLockFiles = /* @__PURE__ */ new Set();
 var _exitHandlersInstalled = false;
+var PROC_NONCE = randomUUID();
 function _releaseAllHeldLocksSync() {
-  const marker = JSON.stringify({ pid: process.pid, ts: Date.now(), released: true });
+  const marker = JSON.stringify({ pid: process.pid, nonce: PROC_NONCE, ts: Date.now(), released: true });
   for (const lockFile of _heldLockFiles) {
     try {
       fsWriteFileSync(lockFile, marker);
@@ -59999,6 +60000,19 @@ function _installExitHandlers() {
     console.error(err && err.stack ? err.stack : err);
     process.exit(1);
   });
+}
+function lockIsBreakable(info, now = Date.now()) {
+  if (!info || typeof info !== "object")
+    return true;
+  if (info.released === true)
+    return true;
+  if (info.pid === process.pid && info.nonce !== PROC_NONCE)
+    return true;
+  if (typeof info.pid === "number" && info.pid !== process.pid && !_isPidAlive(info.pid))
+    return true;
+  if (typeof info.ts !== "number" || now - info.ts > LOCK_STALE_MS)
+    return true;
+  return false;
 }
 function _isPidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0)
@@ -60155,7 +60169,6 @@ var GoogleDriveAdapter = class {
     this._lockDir = join(credentialStore, "locks");
     await mkdir(this._lockDir, { recursive: true });
     _installExitHandlers();
-    await this._sweepDeadLocks();
     try {
       this.tokens = JSON.parse(await readFile2(this.credentialPath, "utf-8"));
       this.oauth2Client.setCredentials(this.tokens);
@@ -61434,7 +61447,7 @@ var GoogleDriveAdapter = class {
     const lockFile = this._lockFilePath(normalizedPath);
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      const lockContent = JSON.stringify({ pid: process.pid, ts: Date.now() });
+      const lockContent = JSON.stringify({ pid: process.pid, nonce: PROC_NONCE, ts: Date.now() });
       try {
         const fh = await open(lockFile, "wx");
         await fh.writeFile(lockContent);
@@ -61449,13 +61462,7 @@ var GoogleDriveAdapter = class {
       try {
         const content = await readFile2(lockFile, "utf-8");
         const info = JSON.parse(content);
-        if (info.released === true) {
-          breakable = true;
-        } else if (typeof info.pid === "number" && !_isPidAlive(info.pid)) {
-          breakable = true;
-        } else if (Date.now() - info.ts > LOCK_STALE_MS) {
-          breakable = true;
-        }
+        breakable = lockIsBreakable(info);
       } catch {
         breakable = true;
       }
@@ -61481,58 +61488,10 @@ var GoogleDriveAdapter = class {
    */
   async _releasePathLock(lockFilePath) {
     _heldLockFiles.delete(lockFilePath);
-    const marker = JSON.stringify({ pid: process.pid, ts: Date.now(), released: true });
+    const marker = JSON.stringify({ pid: process.pid, nonce: PROC_NONCE, ts: Date.now(), released: true });
     try {
       await writeFile(lockFilePath, marker);
     } catch {
-    }
-  }
-  /**
-   * Best-effort startup sweep: walks _lockDir and marks any stale or
-   * dead-PID lock file as released. This catches the case where a
-   * previous invocation was killed (SIGTERM from a Bash timeout, OOM,
-   * etc.) before the exit handlers could run, leaving stale locks that
-   * would otherwise block writes for 30s each.
-   *
-   * Uses overwrite (not unlink) so it works in sandbox environments
-   * where unlink returns EPERM.
-   *
-   * Errors are swallowed — a failed sweep just means the per-call
-   * staleness check has to do the work instead.
-   */
-  async _sweepDeadLocks() {
-    if (!this._lockDir)
-      return;
-    let entries;
-    try {
-      entries = await readdir(this._lockDir);
-    } catch {
-      return;
-    }
-    const releasedMarker = JSON.stringify({ pid: process.pid, ts: Date.now(), released: true });
-    for (const name of entries) {
-      if (!name.endsWith(".lock"))
-        continue;
-      const lockFile = join(this._lockDir, name);
-      try {
-        const content = await readFile2(lockFile, "utf-8");
-        const info = JSON.parse(content);
-        if (info.released === true)
-          continue;
-        const pidDead = typeof info.pid !== "number" || !_isPidAlive(info.pid);
-        const tsStale = typeof info.ts !== "number" || Date.now() - info.ts > LOCK_STALE_MS;
-        if (pidDead || tsStale) {
-          try {
-            await writeFile(lockFile, releasedMarker);
-          } catch {
-          }
-        }
-      } catch {
-        try {
-          await writeFile(lockFile, releasedMarker);
-        } catch {
-        }
-      }
     }
   }
   // ─── Helpers ──────────────────────────────────────────────────────────
