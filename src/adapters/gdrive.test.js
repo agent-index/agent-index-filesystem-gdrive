@@ -872,3 +872,35 @@ test('read: 404 persists after re-resolve → FILE_NOT_FOUND (retried only once)
   await assert.rejects(() => adapter.read('/x.md'), (e) => e.code === 'FILE_NOT_FOUND');
   assert.equal(resolves, 2);
 });
+
+// ─── 2.11.7: lock judgement without a startup sweep (locksweepcost, lockpidreuse) ───
+
+import { lockIsBreakable, PROC_NONCE } from './gdrive.js';
+
+test('lockIsBreakable: released, stale, reused PID, and a live holder', () => {
+  const now = Date.now();
+  assert.equal(lockIsBreakable({ pid: process.pid, nonce: PROC_NONCE, ts: now, released: true }, now), true);
+  assert.equal(lockIsBreakable({ pid: 999999, ts: now - 31_000 }, now), true); // stale
+  // A lock left by an earlier process that had our PID (sandboxes reuse small PIDs).
+  assert.equal(lockIsBreakable({ pid: process.pid, nonce: 'someone-else', ts: now }, now), true);
+  assert.equal(lockIsBreakable({ pid: process.pid, ts: now }, now), true); // pre-2.11.7 lock, our PID
+  // Our own live lock, and a live other process's fresh lock, are not breakable.
+  assert.equal(lockIsBreakable({ pid: process.pid, nonce: PROC_NONCE, ts: now }, now), false);
+  assert.equal(lockIsBreakable({ pid: process.ppid, nonce: 'x', ts: now }, now), false);
+  assert.equal(lockIsBreakable(null, now), true);
+});
+
+test('initialize reads no lock files (no startup sweep)', async () => {
+  const fsp = await import('node:fs/promises');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const store = await fsp.mkdtemp(path.join(os.tmpdir(), 'aifs-store-'));
+  await fsp.mkdir(path.join(store, 'locks'));
+  // A lock left behind by a killed earlier process: unreadable JSON would have been rewritten by a sweep.
+  const left = path.join(store, 'locks', 'x-1.lock');
+  await fsp.writeFile(left, 'not json');
+  const a = new GoogleDriveAdapter();
+  await a.initialize({ client_id: 'c', client_secret: 's', root_folder_id: 'r' }, store);
+  assert.equal(await fsp.readFile(left, 'utf-8'), 'not json'); // untouched: nothing swept
+  await fsp.rm(store, { recursive: true, force: true });
+});
