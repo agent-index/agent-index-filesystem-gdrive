@@ -10,7 +10,7 @@
   "scripts": {
     "build": "node scripts/build.js",
     "build:exec": "esbuild src/exec.mjs --bundle --platform=node --target=node18 --format=esm --outfile=dist/aifs-exec.bundle.js --banner:js=\"import { createRequire } from 'module'; const require = createRequire(import.meta.url);\"",
-    "test": "node --test src/**/*.test.js"
+    "test": "node --test src/*.test.js src/**/*.test.js"
   },
   "keywords": [
     "agent-index",

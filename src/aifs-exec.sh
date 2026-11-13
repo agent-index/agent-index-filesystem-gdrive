@@ -78,11 +78,11 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ] || [ -z "${1:-}" ]; then
   cat <<'HELP'
 Usage: aifs-exec.sh <tool_name> [json_args]
 
-Tools and their JSON arguments (? = optional). Unknown arguments are
-ignored without an error, so a misspelled name silently does nothing.
+Tools and their JSON arguments (? = optional). An unknown argument is
+ignored, but a warning naming it is printed on stderr.
 
   aifs_read                Read file content
-                             {path}
+                             {path, encoding?: "base64"}
   aifs_write               Write file content
                              {path, content | content_file | content_stdin, encoding?, if_revision?}
   aifs_list                List directory contents

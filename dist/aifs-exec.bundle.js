@@ -59884,6 +59884,68 @@ var NotImplementedError = class extends AifsError {
   }
 };
 
+// src/arg-warnings.mjs
+var TOOL_ARGS = Object.freeze({
+  aifs_read: ["path", "encoding"],
+  aifs_write: ["path", "content", "content_file", "content_stdin", "encoding", "if_revision"],
+  aifs_list: ["path", "recursive"],
+  aifs_exists: ["path"],
+  aifs_stat: ["path"],
+  aifs_delete: ["path"],
+  aifs_copy: ["source", "destination"],
+  aifs_auth_status: [],
+  aifs_authenticate: ["action", "auth_code"],
+  aifs_share: ["path", "subject", "role", "inherit"],
+  aifs_unshare: ["path", "subject"],
+  aifs_get_permissions: ["path", "include_inherited"],
+  aifs_search: ["scope", "name_contains", "type", "max_results"],
+  aifs_transfer_ownership: ["path", "new_owner"],
+  aifs_write_batch: ["entries"],
+  aifs_stat_batch: ["paths"]
+});
+var WRITE_BATCH_ENTRY_ARGS = Object.freeze(["path", "content", "content_file", "encoding"]);
+function contentSources(a) {
+  const used = [];
+  if (a.content !== void 0 && a.content !== null)
+    used.push("content");
+  if (typeof a.content_file === "string" && a.content_file.length > 0)
+    used.push("content_file");
+  if (a.content_stdin === true)
+    used.push("content_stdin");
+  return used;
+}
+function argWarnings(toolName, args) {
+  const known = Object.hasOwn(TOOL_ARGS, toolName) ? TOOL_ARGS[toolName] : void 0;
+  if (!known || !args || typeof args !== "object" || Array.isArray(args))
+    return [];
+  const warnings = [];
+  const unknown2 = Object.keys(args).filter((k) => !known.includes(k));
+  if (unknown2.length) {
+    warnings.push(`${toolName}: ignored unknown argument${unknown2.length > 1 ? "s" : ""} ${unknown2.map((k) => `"${k}"`).join(", ")} (accepted: ${known.length ? known.join(", ") : "none"})`);
+  }
+  if (toolName === "aifs_write") {
+    const used = contentSources(args);
+    if (used.length > 1) {
+      warnings.push(`aifs_write: more than one content source given (${used.join(", ")}); used ${used[0]}, ignored ${used.slice(1).join(", ")}`);
+    }
+  }
+  if (toolName === "aifs_write_batch" && Array.isArray(args.entries)) {
+    args.entries.forEach((e, i) => {
+      if (!e || typeof e !== "object")
+        return;
+      const extra = Object.keys(e).filter((k) => !WRITE_BATCH_ENTRY_ARGS.includes(k));
+      if (extra.length) {
+        warnings.push(`aifs_write_batch: entries[${i}] ignored unknown key${extra.length > 1 ? "s" : ""} ${extra.map((k) => `"${k}"`).join(", ")} (accepted: ${WRITE_BATCH_ENTRY_ARGS.join(", ")})`);
+      }
+      const used = contentSources(e).filter((s) => s !== "content_stdin");
+      if (used.length > 1) {
+        warnings.push(`aifs_write_batch: entries[${i}] has both content and content_file; used content, ignored content_file`);
+      }
+    });
+  }
+  return warnings;
+}
+
 // src/adapters/gdrive.js
 var import_google_auth_library = __toESM(require_src6(), 1);
 var import_drive = __toESM(require_build(), 1);
@@ -59894,7 +59956,7 @@ import {
   readFileSync as fsReadFileSync,
   readdirSync as fsReaddirSync
 } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createServer as createServer2 } from "node:http";
 import { Readable } from "node:stream";
 import { dirname as dirname2, join } from "node:path";
@@ -59904,8 +59966,9 @@ var LOCK_POLL_MS = 100;
 var LOCK_TIMEOUT_MS = 6e4;
 var _heldLockFiles = /* @__PURE__ */ new Set();
 var _exitHandlersInstalled = false;
+var PROC_NONCE = randomUUID();
 function _releaseAllHeldLocksSync() {
-  const marker = JSON.stringify({ pid: process.pid, ts: Date.now(), released: true });
+  const marker = JSON.stringify({ pid: process.pid, nonce: PROC_NONCE, ts: Date.now(), released: true });
   for (const lockFile of _heldLockFiles) {
     try {
       fsWriteFileSync(lockFile, marker);
@@ -59937,6 +60000,19 @@ function _installExitHandlers() {
     console.error(err && err.stack ? err.stack : err);
     process.exit(1);
   });
+}
+function lockIsBreakable(info, now = Date.now()) {
+  if (!info || typeof info !== "object")
+    return true;
+  if (info.released === true)
+    return true;
+  if (info.pid === process.pid && info.nonce !== PROC_NONCE)
+    return true;
+  if (typeof info.pid === "number" && info.pid !== process.pid && !_isPidAlive(info.pid))
+    return true;
+  if (typeof info.ts !== "number" || now - info.ts > LOCK_STALE_MS)
+    return true;
+  return false;
 }
 function _isPidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0)
@@ -60093,7 +60169,6 @@ var GoogleDriveAdapter = class {
     this._lockDir = join(credentialStore, "locks");
     await mkdir(this._lockDir, { recursive: true });
     _installExitHandlers();
-    await this._sweepDeadLocks();
     try {
       this.tokens = JSON.parse(await readFile2(this.credentialPath, "utf-8"));
       this.oauth2Client.setCredentials(this.tokens);
@@ -61372,7 +61447,7 @@ var GoogleDriveAdapter = class {
     const lockFile = this._lockFilePath(normalizedPath);
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      const lockContent = JSON.stringify({ pid: process.pid, ts: Date.now() });
+      const lockContent = JSON.stringify({ pid: process.pid, nonce: PROC_NONCE, ts: Date.now() });
       try {
         const fh = await open(lockFile, "wx");
         await fh.writeFile(lockContent);
@@ -61387,13 +61462,7 @@ var GoogleDriveAdapter = class {
       try {
         const content = await readFile2(lockFile, "utf-8");
         const info = JSON.parse(content);
-        if (info.released === true) {
-          breakable = true;
-        } else if (typeof info.pid === "number" && !_isPidAlive(info.pid)) {
-          breakable = true;
-        } else if (Date.now() - info.ts > LOCK_STALE_MS) {
-          breakable = true;
-        }
+        breakable = lockIsBreakable(info);
       } catch {
         breakable = true;
       }
@@ -61419,58 +61488,10 @@ var GoogleDriveAdapter = class {
    */
   async _releasePathLock(lockFilePath) {
     _heldLockFiles.delete(lockFilePath);
-    const marker = JSON.stringify({ pid: process.pid, ts: Date.now(), released: true });
+    const marker = JSON.stringify({ pid: process.pid, nonce: PROC_NONCE, ts: Date.now(), released: true });
     try {
       await writeFile(lockFilePath, marker);
     } catch {
-    }
-  }
-  /**
-   * Best-effort startup sweep: walks _lockDir and marks any stale or
-   * dead-PID lock file as released. This catches the case where a
-   * previous invocation was killed (SIGTERM from a Bash timeout, OOM,
-   * etc.) before the exit handlers could run, leaving stale locks that
-   * would otherwise block writes for 30s each.
-   *
-   * Uses overwrite (not unlink) so it works in sandbox environments
-   * where unlink returns EPERM.
-   *
-   * Errors are swallowed — a failed sweep just means the per-call
-   * staleness check has to do the work instead.
-   */
-  async _sweepDeadLocks() {
-    if (!this._lockDir)
-      return;
-    let entries;
-    try {
-      entries = await readdir(this._lockDir);
-    } catch {
-      return;
-    }
-    const releasedMarker = JSON.stringify({ pid: process.pid, ts: Date.now(), released: true });
-    for (const name of entries) {
-      if (!name.endsWith(".lock"))
-        continue;
-      const lockFile = join(this._lockDir, name);
-      try {
-        const content = await readFile2(lockFile, "utf-8");
-        const info = JSON.parse(content);
-        if (info.released === true)
-          continue;
-        const pidDead = typeof info.pid !== "number" || !_isPidAlive(info.pid);
-        const tsStale = typeof info.ts !== "number" || Date.now() - info.ts > LOCK_STALE_MS;
-        if (pidDead || tsStale) {
-          try {
-            await writeFile(lockFile, releasedMarker);
-          } catch {
-          }
-        }
-      } catch {
-        try {
-          await writeFile(lockFile, releasedMarker);
-        } catch {
-        }
-      }
     }
   }
   // ─── Helpers ──────────────────────────────────────────────────────────
@@ -62354,9 +62375,9 @@ async function main() {
         "aifs_stat_batch"
       ],
       // Argument signatures, kept in step with routeToolCall above.
-      // "?" = optional. Unknown arguments are ignored without an error.
+      // "?" = optional. An unknown argument is ignored, with a warning on stderr.
       arguments: {
-        aifs_read: "{path}",
+        aifs_read: '{path, encoding?: "base64"}',
         aifs_write: "{path, content | content_file | content_stdin, encoding?, if_revision?}",
         aifs_list: "{path, recursive?}",
         aifs_exists: "{path}",
@@ -62376,6 +62397,7 @@ async function main() {
       notes: [
         "aifs_write: give exactly one of content, content_file, content_stdin. Inline content is bounded by the OS argument limit (~128 KiB); content_file and content_stdin have no size limit. If more than one is given, content wins, then content_file, then content_stdin.",
         'encoding "base64": a content_file/content_stdin payload is taken as raw bytes (use for binary files; otherwise it is read as UTF-8). An inline content string must itself be base64.',
+        'aifs_read encoding "base64": always return the base64: form, even for content that would decode as text (use it to read binary files byte-exact).',
         "if_revision: revision from aifs_stat; the write fails with REVISION_CONFLICT if the file has changed since.",
         "aifs_search: without name_contains nothing is filtered \u2014 an arbitrary, unordered page of up to max_results (default 100, max 1000) items under scope."
       ],
@@ -62404,6 +62426,13 @@ async function main() {
     }
   }
   toolArgs = normalizePathArgs(toolArgs);
+  try {
+    for (const w of argWarnings(toolName, toolArgs)) {
+      process.stderr.write(`aifs-exec: warning: ${w}
+`);
+    }
+  } catch {
+  }
   initEnvironment();
   let config2;
   try {

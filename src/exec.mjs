@@ -46,6 +46,7 @@ import {
   FileNotFoundError,
   PathNotFoundError,
 } from '@agent-index/filesystem/errors';
+import { argWarnings } from './arg-warnings.mjs';
 import { GoogleDriveAdapter } from './adapters/gdrive.js';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
@@ -440,9 +441,9 @@ async function main() {
         'aifs_stat_batch',
       ],
       // Argument signatures, kept in step with routeToolCall above.
-      // "?" = optional. Unknown arguments are ignored without an error.
+      // "?" = optional. An unknown argument is ignored, with a warning on stderr.
       arguments: {
-        aifs_read: '{path}',
+        aifs_read: '{path, encoding?: "base64"}',
         aifs_write: '{path, content | content_file | content_stdin, encoding?, if_revision?}',
         aifs_list: '{path, recursive?}',
         aifs_exists: '{path}',
@@ -462,6 +463,7 @@ async function main() {
       notes: [
         'aifs_write: give exactly one of content, content_file, content_stdin. Inline content is bounded by the OS argument limit (~128 KiB); content_file and content_stdin have no size limit. If more than one is given, content wins, then content_file, then content_stdin.',
         'encoding "base64": a content_file/content_stdin payload is taken as raw bytes (use for binary files; otherwise it is read as UTF-8). An inline content string must itself be base64.',
+        'aifs_read encoding "base64": always return the base64: form, even for content that would decode as text (use it to read binary files byte-exact).',
         'if_revision: revision from aifs_stat; the write fails with REVISION_CONFLICT if the file has changed since.',
         'aifs_search: without name_contains nothing is filtered — an arbitrary, unordered page of up to max_results (default 100, max 1000) items under scope.',
         'Org locations are addressed by plain path on every backend: /org-config.json, /members-registry.json, /shared/..., /{collection}/... The executor finds them from org-config (2.12.0). id: addresses still work and pass through unchanged.',
@@ -500,6 +502,15 @@ async function main() {
   // paths. Normalize before handing off to the adapter so the user sees
   // "PATH_NOT_FOUND" instead of a silent miss through the path cache.
   toolArgs = normalizePathArgs(toolArgs);
+
+  // CI-018 Phase 1: name ignored arguments on stderr (stdout stays the tool's
+  // output, byte-exact for aifs_read). The call still runs exactly as before.
+  // A warning must never break a call: if building or printing one fails, the call runs anyway.
+  try {
+    for (const w of argWarnings(toolName, toolArgs)) {
+      process.stderr.write(`aifs-exec: warning: ${w}\n`);
+    }
+  } catch { /* warnings are best-effort */ }
 
   // Initialize environment (proxy/TLS)
   initEnvironment();

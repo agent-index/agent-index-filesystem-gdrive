@@ -17,13 +17,33 @@ Requires shared library `@agent-index/filesystem` 2.3.0 (bundled). Pairs with co
 - Caches are saved after an error too (the error path used to exit before saving).
 - `scope` and batch entries are normalized like other path arguments.
 
-### Correction to 2.11.6
-- The read check's error carries `reason` (`size_mismatch` or `checksum_mismatch`) at the top level of the response, not under `details`.
+## [2.11.8] — 2026-11-12 — no startup lock sweep (calls ~4x faster on Cowork)
+
+The fix shipped to CodePath's test channel as its 2.11.7 (`0271e43`, PR #7), rebased onto the released 2.11.7. Pairs with agent-index-core 4.1.1.
+
+### Fixed
+- **Every call read every lock file ever written (bug `locksweepcost`, CodePath live round 3, R3-A10).** On start the adapter swept `credentials/locks/`, reading each lock file to release ones left by dead processes. On a Cowork mount unlink is refused, so released locks are never deleted: one file stays per folder path ever written, each read costs ~13 ms, and after a few weeks a call spent ~3 s of its ~4.4 s there (237 files on the Dev Three admin install; the operator's grows by about one per proposal). The sweep is gone; a lock is judged only when an acquire meets it. A call now takes ~0.9 s (measured on Dev Three, all 237 files present).
+- **Locks left by killed processes with a reused PID are breakable (`lockpidreuse`).** Sandboxes give every invocation the same small PID, so a lock from a killed earlier process looked like this process's own and waited out the 30 s stale timeout. Lock files now carry a per-process `nonce`; a lock with our PID and another nonce (or none) is from a dead process. `lockIsBreakable` (exported) decides: released, reused PID, dead PID, or stale.
+- Two tests added (suite 71/71).
+
+## [2.11.7] — 2026-11-10 — warnings for ignored arguments
+
+Pairs with agent-index-core 4.1.1.
+
+### Added
+- **The executor names arguments it ignores (CI-018 Phase 1, bug f989).** An argument a tool doesn't take is still ignored, but a warning naming the tool, the argument and the accepted ones is written to stderr (`aifs-exec: warning: ...`). `aifs_write` also warns when it gets more than one of `content`, `content_file` and `content_stdin`, naming the one used (precedence unchanged: content, then content_file, then content_stdin); `aifs_write_batch` does the same per entry. stdout and exit codes are unchanged, and a warning can never fail a call. A test checks the accepted-argument lists against what the executor reads, so they can't drift apart.
+- **`--help` documents `aifs_read`'s `encoding: "base64"`** in both the wrapper and the executor's JSON help (DC-001).
+
+### Fixed
+- `npm test` runs the tests in `src/` as well as `src/adapters/`.
+
+### Corrected
+- **2.11.6 entry:** the read-check error carries `reason` at the top level of the error response, not in `details.reason` (`AifsError.toResponse()` spreads `details`).
 
 ## [2.11.6] — 2026-10-17 — every read checked against the file's metadata
 
 ### Fixed
-- **`aifs_read` verifies non-empty reads (bug 20260928-8d20ea22-211327-733b).** Only empty reads were checked (the 2.6.0 flakyread gate); a stale or short body from an intermediate cache or a truncated response was returned as success. Every read now fetches `size`, `md5Checksum` and `mimeType` and compares the body. On a mismatch it re-reads both metadata and body with the existing backoff (`READ_RETRY_BACKOFF_MS`), then fails with `AIFS_READ_UNRELIABLE` (`details.reason`: `size_mismatch` or `checksum_mismatch`). Files without an md5 (and, defensively, native Google Docs/Sheets/Slides) are not checked, and if the metadata call itself fails on a non-empty read the read still succeeds without the check. Cost: one metadata call per read.
+- **`aifs_read` verifies non-empty reads (bug 20260928-8d20ea22-211327-733b).** Only empty reads were checked (the 2.6.0 flakyread gate); a stale or short body from an intermediate cache or a truncated response was returned as success. Every read now fetches `size`, `md5Checksum` and `mimeType` and compares the body. On a mismatch it re-reads both metadata and body with the existing backoff (`READ_RETRY_BACKOFF_MS`), then fails with `AIFS_READ_UNRELIABLE` (`reason`: `size_mismatch` or `checksum_mismatch`, at the top level of the error). Files without an md5 (and, defensively, native Google Docs/Sheets/Slides) are not checked, and if the metadata call itself fails on a non-empty read the read still succeeds without the check. Cost: one metadata call per read.
 - Source comments cite the developer collection's `marketplace-eligibility.md` for the file-integrity sentinel (core 4.1.0 retires `standards.md`).
 
 ## [2.11.5] — 2026-10-17 — honest auth status, delete fallback, stale-cache retry
