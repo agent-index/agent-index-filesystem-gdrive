@@ -873,7 +873,7 @@ test('read: 404 persists after re-resolve → FILE_NOT_FOUND (retried only once)
   assert.equal(resolves, 2);
 });
 
-// ─── 2.11.7: lock judgement without a startup sweep (locksweepcost, lockpidreuse) ───
+// ─── 2.11.8: lock judgement without a startup sweep (locksweepcost, lockpidreuse) ───
 
 import { lockIsBreakable, PROC_NONCE } from './gdrive.js';
 
@@ -883,7 +883,7 @@ test('lockIsBreakable: released, stale, reused PID, and a live holder', () => {
   assert.equal(lockIsBreakable({ pid: 999999, ts: now - 31_000 }, now), true); // stale
   // A lock left by an earlier process that had our PID (sandboxes reuse small PIDs).
   assert.equal(lockIsBreakable({ pid: process.pid, nonce: 'someone-else', ts: now }, now), true);
-  assert.equal(lockIsBreakable({ pid: process.pid, ts: now }, now), true); // pre-2.11.7 lock, our PID
+  assert.equal(lockIsBreakable({ pid: process.pid, ts: now }, now), true); // pre-2.11.8 lock (no nonce), our PID
   // Our own live lock, and a live other process's fresh lock, are not breakable.
   assert.equal(lockIsBreakable({ pid: process.pid, nonce: PROC_NONCE, ts: now }, now), false);
   assert.equal(lockIsBreakable({ pid: process.ppid, nonce: 'x', ts: now }, now), false);
