@@ -293,8 +293,11 @@ async function routeToolCall(adapter, toolName, args, ctx = {}) {
       return {
         ...status,
         bootstrap: b.bootstrap,
-        ...(b.member_hash ? { member_hash: b.member_hash } : {}),
+        ...(b.member_hash !== undefined ? { member_hash: b.member_hash } : {}),
         ...(b.reason ? { bootstrap_reason: b.reason } : {}),
+        // finding 108: the signed-in account isn't always the agent-index email
+        ...(b.identity_match === false ? { identity_match: false, signed_in_hash: b.signed_in_hash } : {}),
+        ...(b.local_member_hashes ? { local_member_hashes: b.local_member_hashes } : {}),
       };
     }
 
@@ -468,7 +471,7 @@ async function main() {
         'aifs_search: without name_contains nothing is filtered — an arbitrary, unordered page of up to max_results (default 100, max 1000) items under scope.',
         'Org locations are addressed by plain path on every backend: /org-config.json, /members-registry.json, /shared/..., /{collection}/... The executor finds them from org-config (2.12.0). id: addresses still work and pass through unchanged.',
         'aifs_authenticate start: returns the sign-in already in progress (under 10 minutes old) instead of a new link; pass force:true to start over.',
-        'aifs_auth_status: includes bootstrap (ready | needs_auth | needs_setup) and member_hash, from local state.',
+        'aifs_auth_status: includes bootstrap (ready | needs_auth | needs_setup) and member_hash, from local state. needs_setup means no member workspace on this install; when the signed-in Google account is not the agent-index email, identity_match is false and member_hash is the only local workspace (null if there are several: resolve from the member\'s agent-index email).',
         'aifs_delete refuses an org root itself (the shared root, a collection folder, org-config, the registry): PROTECTED_ORG_PATH.',
       ],
       examples: [
