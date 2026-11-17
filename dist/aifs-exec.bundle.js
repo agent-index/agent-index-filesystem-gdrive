@@ -60216,7 +60216,7 @@ function missingSegments(map2, toolName, args) {
 
 // ../agent-index-filesystem/src/session-state.js
 import { readFile as readFile3, writeFile as writeFile2, rename as rename2, mkdir as mkdir2, unlink } from "node:fs/promises";
-import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync2, readdirSync } from "node:fs";
 import { join as join2, dirname as dirname3 } from "node:path";
 import { createHash } from "node:crypto";
 var PENDING_AUTH_FILENAME = "pending-auth.json";
@@ -60279,6 +60279,16 @@ async function readIdentity(credentialStore) {
 function memberHash(email3, length = 16) {
   return createHash("sha256").update(String(email3).toLowerCase()).digest("hex").slice(0, length);
 }
+function localWorkspaces(installDir, membersRoot = "members") {
+  try {
+    const root = join2(installDir, membersRoot);
+    if (!existsSync2(root))
+      return [];
+    return readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && existsSync2(join2(root, e.name, "member-index.json"))).map((e) => e.name).sort();
+  } catch {
+    return [];
+  }
+}
 function bootstrapState({ configPath, authenticated, email: email3 }) {
   try {
     if (!configPath || !existsSync2(configPath)) {
@@ -60298,11 +60308,32 @@ function bootstrapState({ configPath, authenticated, email: email3 }) {
       return { bootstrap: "needs_auth", reason: "identity_unknown" };
     const length = Number(cfg?.identity_resolution?.hash_length) || 16;
     const hash2 = memberHash(email3, length);
-    const memberIndex = join2(dirname3(configPath), "members", hash2, "member-index.json");
-    if (!existsSync2(memberIndex)) {
+    const installDir = dirname3(configPath);
+    const membersRoot = typeof cfg?.local?.members_root === "string" && cfg.local.members_root || "members";
+    if (existsSync2(join2(installDir, membersRoot, hash2, "member-index.json"))) {
+      return { bootstrap: "ready", member_hash: hash2 };
+    }
+    const workspaces = localWorkspaces(installDir, membersRoot);
+    if (workspaces.length === 0) {
       return { bootstrap: "needs_setup", reason: "no_member_workspace", member_hash: hash2 };
     }
-    return { bootstrap: "ready", member_hash: hash2 };
+    if (workspaces.length === 1) {
+      return {
+        bootstrap: "ready",
+        member_hash: workspaces[0],
+        identity_match: false,
+        reason: "signed_in_account_differs",
+        signed_in_hash: hash2
+      };
+    }
+    return {
+      bootstrap: "ready",
+      member_hash: null,
+      identity_match: false,
+      reason: "several_workspaces",
+      signed_in_hash: hash2,
+      local_member_hashes: workspaces
+    };
   } catch (err) {
     return { bootstrap: "needs_setup", reason: `check_failed:${err?.message || "error"}` };
   }
@@ -62750,8 +62781,11 @@ async function routeToolCall(adapter, toolName, args, ctx = {}) {
       return {
         ...status,
         bootstrap: b.bootstrap,
-        ...b.member_hash ? { member_hash: b.member_hash } : {},
-        ...b.reason ? { bootstrap_reason: b.reason } : {}
+        ...b.member_hash !== void 0 ? { member_hash: b.member_hash } : {},
+        ...b.reason ? { bootstrap_reason: b.reason } : {},
+        // finding 108: the signed-in account isn't always the agent-index email
+        ...b.identity_match === false ? { identity_match: false, signed_in_hash: b.signed_in_hash } : {},
+        ...b.local_member_hashes ? { local_member_hashes: b.local_member_hashes } : {}
       };
     }
     case "aifs_authenticate": {
@@ -62904,7 +62938,7 @@ async function main() {
         "aifs_search: without name_contains nothing is filtered \u2014 an arbitrary, unordered page of up to max_results (default 100, max 1000) items under scope.",
         "Org locations are addressed by plain path on every backend: /org-config.json, /members-registry.json, /shared/..., /{collection}/... The executor finds them from org-config (2.12.0). id: addresses still work and pass through unchanged.",
         "aifs_authenticate start: returns the sign-in already in progress (under 10 minutes old) instead of a new link; pass force:true to start over.",
-        "aifs_auth_status: includes bootstrap (ready | needs_auth | needs_setup) and member_hash, from local state.",
+        "aifs_auth_status: includes bootstrap (ready | needs_auth | needs_setup) and member_hash, from local state. needs_setup means no member workspace on this install; when the signed-in Google account is not the agent-index email, identity_match is false and member_hash is the only local workspace (null if there are several: resolve from the member's agent-index email).",
         "aifs_delete refuses an org root itself (the shared root, a collection folder, org-config, the registry): PROTECTED_ORG_PATH."
       ],
       examples: [
