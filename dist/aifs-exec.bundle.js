@@ -60079,6 +60079,7 @@ async function orgConfigRevision(adapter, address) {
   const st = await adapter.stat(address);
   return st?.revision ?? null;
 }
+var NOT_VISIBLE_CODES = /* @__PURE__ */ new Set(["FILE_NOT_FOUND", "PATH_NOT_FOUND", "ACCESS_DENIED"]);
 async function validatePrefixes(adapter, config2, prefixes, dropped, warn) {
   const orgDrive = config2?.connection?.drive_id || null;
   if (!orgDrive || typeof adapter.stat !== "function")
@@ -60102,7 +60103,10 @@ async function validatePrefixes(adapter, config2, prefixes, dropped, warn) {
           return { k, ok: true };
         return { k, ok: false, reason: "outside_org_drive", detail: d };
       } catch (err) {
-        return { k, ok: false, reason: "unverified", detail: err?.code || "stat_failed", transient: true };
+        const code = err?.code || "stat_failed";
+        if (NOT_VISIBLE_CODES.has(code))
+          return { k, ok: false, reason: "not_visible", detail: code };
+        return { k, ok: false, reason: "unverified", detail: code, transient: true };
       }
     })));
   }
