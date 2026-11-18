@@ -904,3 +904,58 @@ test('initialize reads no lock files (no startup sweep)', async () => {
   assert.equal(await fsp.readFile(left, 'utf-8'), 'not json'); // untouched: nothing swept
   await fsp.rm(store, { recursive: true, force: true });
 });
+
+// ─── Credential-store lock and plain re-sign-in message (bug 20261118-68dff8bf-143550-c1a2) ───
+
+import { mkdtemp as _mkdtemp, writeFile as _writeFile, readFile as _readFile, rm as _rm } from 'node:fs/promises';
+import _os from 'node:os';
+import _path from 'node:path';
+
+async function gdStore(tokens) {
+  const dir = await _mkdtemp(_path.join(_os.tmpdir(), 'gd-cred-'));
+  await _writeFile(_path.join(dir, 'gdrive.json'), JSON.stringify(tokens));
+  return dir;
+}
+async function gdAdapter(dir) {
+  const a = new GoogleDriveAdapter();
+  await a.initialize({ client_id: 'c', client_secret: 's', root_folder_id: 'r' }, dir);
+  return a;
+}
+
+test('credential lock (bug c1a2): two refreshes at once call Google once, and both end with the new token', async () => {
+  const dir = await gdStore({ access_token: 'a1', refresh_token: 'r1', expiry_date: Date.now() - 1000 });
+  let calls = 0;
+  const fakeRefresh = async () => { calls++; await new Promise((r) => setTimeout(r, 50)); return { credentials: { access_token: 'a2', expiry_date: Date.now() + 3600_000 } }; };
+  try {
+    const [x, y] = [await gdAdapter(dir), await gdAdapter(dir)];
+    x.oauth2Client.refreshAccessToken = fakeRefresh; y.oauth2Client.refreshAccessToken = fakeRefresh;
+    await Promise.all([x._refreshToken(), y._refreshToken()]);
+    assert.equal(calls, 1, 'the second process must reuse the first refresh');
+    assert.equal(x.tokens.access_token, 'a2'); assert.equal(y.tokens.access_token, 'a2');
+    const disk = JSON.parse(await _readFile(_path.join(dir, 'gdrive.json'), 'utf-8'));
+    assert.equal(disk.access_token, 'a2'); assert.equal(disk.refresh_token, 'r1', 'refresh_token kept');
+  } finally { await _rm(dir, { recursive: true, force: true }); }
+});
+
+test('credential write (bug c1a2): a locked write keeps the refresh_token and never replaces a newer access token on disk', async () => {
+  const later = Date.now() + 7200_000;
+  const dir = await gdStore({ access_token: 'newer', refresh_token: 'r1', expiry_date: later });
+  try {
+    const a = await gdAdapter(dir);
+    await a._writeCredential({ access_token: 'older', expiry_date: Date.now() + 60_000 });
+    const disk = JSON.parse(await _readFile(_path.join(dir, 'gdrive.json'), 'utf-8'));
+    assert.equal(disk.refresh_token, 'r1'); assert.equal(disk.access_token, 'newer'); assert.equal(disk.expiry_date, later);
+  } finally { await _rm(dir, { recursive: true, force: true }); }
+});
+
+test('rejected sign-in (bug c1a2): invalid_grant stays reason expired, with a plain sign-in-again message and Google\'s text kept', async () => {
+  const dir = await gdStore({ access_token: 'a1', refresh_token: 'bad', expiry_date: Date.now() - 1000 });
+  try {
+    const a = await gdAdapter(dir);
+    a.oauth2Client.refreshAccessToken = async () => { const e = new Error('invalid_grant'); e.response = { data: { error: 'invalid_grant' } }; throw e; };
+    await assert.rejects(() => a._refreshToken(), (e) => e.code === 'NOT_AUTHENTICATED' && e.details.refresh_reason === 'expired'
+      && /Sign in again on this computer/.test(e.message) && /Never copy your sign-in/.test(e.message) && /Google: invalid_grant/.test(e.details.refresh_detail));
+    const st = await a.getAuthStatus();
+    assert.equal(st.reason, 'expired'); assert.match(st.detail, /Sign in again on this computer/);
+  } finally { await _rm(dir, { recursive: true, force: true }); }
+});

@@ -33,6 +33,12 @@ Set by the org admin during `create-org`:
 | `client_id` | Yes | OAuth 2.0 client ID from the org's Google Cloud project. |
 | `client_secret` | Yes | OAuth 2.0 client secret from the org's Google Cloud project. |
 
+## Credentials stay on the member's device
+
+- The member's sign-in lives in `.agent-index/credentials/gdrive.json` on their own computer. Only this executor reads it, and only when it runs on that computer. Never copy, read, upload or stage that folder anywhere else, and never run `aifs-exec` with a member's credentials in a cloud container or on another machine. If the executor can't run in a session, stop (core CLAUDE.md § "Important Constraints" and § "Bootstrap Protocol"; bug `20261118-68dff8bf-143550-c1a2`).
+- **Token refresh is locked.** A refresh runs under a credential lock (the same lock files as path locks, under `credentials/locks/`) and re-reads the store first, so two processes on the same computer don't both refresh and overwrite each other. Other credential writes are a locked read-merge-write: they keep the stored `refresh_token` and never replace a newer access token.
+- **`NOT_AUTHENTICATED` with `reason: "expired"`** after a refresh means Google rejected the stored sign-in (`invalid_grant`: revoked, expired, or replaced). The message tells the member to sign in again on this computer (`@ai:member-bootstrap`); Google's own text stays in `detail`.
+
 ## Development
 
 ```bash
