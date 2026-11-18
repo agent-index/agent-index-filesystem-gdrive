@@ -574,6 +574,7 @@ async function main() {
       const ctx = { config, adapter, credentialStore, warn };
       let r = await resolveOrgMap(ctx);
       orgMap = r.map;
+      if (VERBOSE && orgMap) warn(`aifs: org map: ${r.rebuilt ? 'built from org-config' + (r.persist === false ? ' (not saved: a check failed transiently)' : ' and saved') : 'from the saved file'} (${Object.keys(orgMap.prefixes || {}).length} prefixes)`);
       if (!orgMap) {
         orgMapReason = r.reason;
         warn(`aifs: org map unavailable (${r.reason}); paths resolved without it`);
