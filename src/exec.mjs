@@ -582,6 +582,7 @@ async function main() {
         for (const seg of missingSegments(orgMap, toolName, toolArgs)) {
           r = await resolveOrgMap({ ...ctx, mode: 'missing-prefix', segment: seg });
           if (r.map) orgMap = r.map;
+          if (VERBOSE && r.rebuilt && orgMap) warn(`aifs: org map: rebuilt for /${seg} (org-config changed)${r.persist === false ? ', not saved' : ' and saved'} (${Object.keys(orgMap.prefixes || {}).length} prefixes)`);
         }
         toolArgs = canonicalizeArgs(orgMap, toolName, toolArgs);
         adapter.seedOrgPrefixes(orgMap.prefixes);
