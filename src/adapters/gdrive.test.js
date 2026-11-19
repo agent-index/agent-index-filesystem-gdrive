@@ -959,3 +959,56 @@ test('rejected sign-in (bug c1a2): invalid_grant stays reason expired, with a pl
     assert.equal(st.reason, 'expired'); assert.match(st.detail, /Sign in again on this computer/);
   } finally { await _rm(dir, { recursive: true, force: true }); }
 });
+
+// ─── Review fixes (bug c1a2, Bill 11/18): refresh-skip rule and the credential-lock timeout ───
+
+import { CredentialLockBusyError } from './gdrive.js';
+
+test('refresh after a 401 (bug c1a2 review): a rejected but unexpired token on disk is refreshed, not reused', async () => {
+  const dir = await gdStore({ access_token: 'a1', refresh_token: 'r1', expiry_date: Date.now() + 3600_000 });
+  let calls = 0;
+  try {
+    const a = await gdAdapter(dir);
+    a.oauth2Client.refreshAccessToken = async () => { calls++; return { credentials: { access_token: 'a2', expiry_date: Date.now() + 3600_000 } }; };
+    const used = [];
+    const op = async () => {
+      used.push(a.tokens.access_token);
+      if (a.tokens.access_token === 'a1') { const e = new Error('Invalid Credentials'); e.code = 401; throw e; }
+      return 'ok';
+    };
+    assert.equal(await a._withAutoRefresh(op), 'ok');
+    assert.equal(calls, 1, 'the 401 must lead to a real refresh');
+    assert.deepEqual(used, ['a1', 'a2'], 'the retry uses the new token, not the rejected one');
+    assert.equal(JSON.parse(await _readFile(_path.join(dir, 'gdrive.json'), 'utf-8')).access_token, 'a2');
+  } finally { await _rm(dir, { recursive: true, force: true }); }
+});
+
+test('refresh skip (bug c1a2 review): a different, valid token saved by another process is used without calling Google', async () => {
+  const dir = await gdStore({ access_token: 'fresh', refresh_token: 'r1', expiry_date: Date.now() + 3600_000 });
+  let calls = 0;
+  try {
+    const a = await gdAdapter(dir);
+    a.tokens = { ...a.tokens, access_token: 'old-held', expiry_date: Date.now() - 1000 };
+    a.oauth2Client.refreshAccessToken = async () => { calls++; return { credentials: { access_token: 'x', expiry_date: Date.now() + 3600_000 } }; };
+    await a._refreshToken();
+    assert.equal(calls, 0); assert.equal(a.tokens.access_token, 'fresh');
+  } finally { await _rm(dir, { recursive: true, force: true }); }
+});
+
+test('lock busy (bug c1a2 review): a credential-lock timeout names the credential lock and is credential_lock_busy, needs_auth false', async () => {
+  const dir = await gdStore({ access_token: 'a1', refresh_token: 'r1', expiry_date: Date.now() - 1000 });
+  let calls = 0;
+  try {
+    const a = await gdAdapter(dir);
+    a.oauth2Client.refreshAccessToken = async () => { calls++; return { credentials: { access_token: 'a2', expiry_date: Date.now() + 3600_000 } }; };
+    const lockFile = a._lockFilePath('/.agent-index-credentials');
+    await (await import("node:fs/promises")).mkdir(_path.dirname(lockFile), { recursive: true });
+    await _writeFile(lockFile, JSON.stringify({ pid: process.pid, nonce: PROC_NONCE, ts: Date.now() })); // live and fresh
+    a._credLockTimeoutMs = 400;
+    await assert.rejects(() => a._refreshToken(), (e) => e instanceof CredentialLockBusyError
+      && /credential-store lock/.test(e.message) && !/folder lock/.test(e.message) && /do not need to sign in again/.test(e.message));
+    const st = await a.getAuthStatus();
+    assert.equal(st.authenticated, false); assert.equal(st.reason, 'credential_lock_busy'); assert.equal(st.needs_auth, false);
+    assert.equal(calls, 0, 'no refresh without the lock');
+  } finally { await _rm(dir, { recursive: true, force: true }); }
+});

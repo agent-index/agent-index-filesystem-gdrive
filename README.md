@@ -36,8 +36,9 @@ Set by the org admin during `create-org`:
 ## Credentials stay on the member's device
 
 - The member's sign-in lives in `.agent-index/credentials/gdrive.json` on their own computer. Only this executor reads it, and only when it runs on that computer. Never copy, read, upload or stage that folder anywhere else, and never run `aifs-exec` with a member's credentials in a cloud container or on another machine. If the executor can't run in a session, stop (core CLAUDE.md § "Important Constraints" and § "Bootstrap Protocol"; bug `20261118-68dff8bf-143550-c1a2`).
-- **Token refresh is locked.** A refresh runs under a credential lock (the same lock files as path locks, under `credentials/locks/`) and re-reads the store first, so two processes on the same computer don't both refresh and overwrite each other. Other credential writes are a locked read-merge-write: they keep the stored `refresh_token` and never replace a newer access token.
+- **Token refresh is locked.** A refresh runs under a credential lock (the same lock files as path locks, under `credentials/locks/`) and re-reads the store first, so two processes on the same computer don't both refresh and overwrite each other. It skips its own refresh only if another process saved a different, still-valid token; the same token on disk (for example one Google just rejected with a 401) is refreshed. Other credential writes are a locked read-merge-write: they keep the stored `refresh_token` and never replace a newer access token.
 - **`NOT_AUTHENTICATED` with `reason: "expired"`** after a refresh means Google rejected the stored sign-in (`invalid_grant`: revoked, expired, or replaced). The message tells the member to sign in again on this computer (`@ai:member-bootstrap`); Google's own text stays in `detail`.
+- **`reason: "credential_lock_busy"`** (with `needs_auth: false`) in `aifs_auth_status` means another agent-index process on this computer held the credential lock for the whole wait. It is not a sign-in or network problem: try again; don't sign in again.
 
 ## Development
 

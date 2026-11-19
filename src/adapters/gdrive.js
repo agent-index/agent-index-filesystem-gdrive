@@ -313,6 +313,15 @@ export function classifyRefreshError(err) {
   return 'refresh_failed';
 }
 
+/** The credential lock stayed busy for the whole wait. Not a sign-in problem (bug c1a2 review). */
+export class CredentialLockBusyError extends BackendError {
+  constructor(lockFile) {
+    super(`Timed out waiting for the credential-store lock (${lockFile}). Another agent-index process `
+      + 'on this computer is refreshing your sign-in. Try again in a moment; you do not need to sign in again.');
+    this.details = { ...(this.details || {}), reason: 'credential_lock_busy', needs_auth: false };
+  }
+}
+
 export class GoogleDriveAdapter {
   constructor() {
     this.connection = null;
@@ -449,6 +458,10 @@ export class GoogleDriveAdapter {
             expires_at: new Date(this.tokens.expiry_date).toISOString(),
           };
         } catch (err) {
+          // A busy credential lock is not a sign-in or network problem (bug c1a2 review).
+          if (err instanceof CredentialLockBusyError) {
+            return { authenticated: false, ...base, reason: 'credential_lock_busy', needs_auth: false, detail: err.message };
+          }
           // a1c4: report the actual cause; only invalid_grant/revoked is 'expired'.
           return {
             authenticated: false,
@@ -1998,10 +2011,14 @@ export class GoogleDriveAdapter {
     };
     // Bug c1a2: refresh under the credential lock, re-reading the store first, so two processes
     // never refresh and overwrite each other at once. If another process already refreshed, use it.
+    // Skip only for a DIFFERENT valid token: after a 401 (_withAutoRefresh) the token on disk is the
+    // one Google just rejected, though not expired, and it must be refreshed (bug c1a2 review).
+    const heldAccessToken = this.tokens ? this.tokens.access_token : undefined;
     await this._withCredentialLock(async () => {
       if (this.credentialPath) try {
         const onDisk = JSON.parse(await readFile(this.credentialPath, 'utf-8'));
-        if (onDisk && onDisk.access_token && onDisk.expiry_date && (onDisk.expiry_date - 300_000) >= Date.now()) {
+        if (onDisk && onDisk.access_token && onDisk.access_token !== heldAccessToken
+            && onDisk.expiry_date && (onDisk.expiry_date - 300_000) >= Date.now()) {
           this.tokens = { ...this.tokens, ...onDisk };
           this.oauth2Client.setCredentials(this.tokens);
           return;
@@ -2026,7 +2043,16 @@ export class GoogleDriveAdapter {
   /** Run fn holding the credential-store lock (a path lock on a reserved key; bug c1a2). */
   async _withCredentialLock(fn) {
     if (this._credLockHeld || !this._lockDir) return fn(); // re-entrant; uninitialized adapter (tests)
-    const lockFile = await this._acquirePathLock('/.agent-index-credentials');
+    let lockFile;
+    try {
+      lockFile = await this._acquirePathLock('/.agent-index-credentials', this._credLockTimeoutMs);
+    } catch (err) {
+      // Name the credential lock, not a folder lock, and say it's not a sign-in problem (bug c1a2 review).
+      if (err instanceof BackendError && /^Timed out waiting for folder lock/.test(err.message)) {
+        throw new CredentialLockBusyError(this._lockFilePath('/.agent-index-credentials'));
+      }
+      throw err;
+    }
     this._credLockHeld = true;
     try { return await fn(); }
     finally { this._credLockHeld = false; await this._releasePathLock(lockFile); }
@@ -2072,9 +2098,9 @@ export class GoogleDriveAdapter {
    * delete-to-release. A lock file with `released: true` is treated
    * the same as no lock file.
    */
-  async _acquirePathLock(normalizedPath) {
+  async _acquirePathLock(normalizedPath, timeoutMs = LOCK_TIMEOUT_MS) {
     const lockFile = this._lockFilePath(normalizedPath);
-    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    const deadline = Date.now() + (timeoutMs || LOCK_TIMEOUT_MS);
 
     while (Date.now() < deadline) {
       const lockContent = JSON.stringify({ pid: process.pid, nonce: PROC_NONCE, ts: Date.now() });
