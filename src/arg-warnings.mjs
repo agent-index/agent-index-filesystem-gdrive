@@ -19,7 +19,7 @@ export const TOOL_ARGS = Object.freeze({
   aifs_delete: ['path'],
   aifs_copy: ['source', 'destination'],
   aifs_auth_status: [],
-  aifs_authenticate: ['action', 'auth_code'],
+  aifs_authenticate: ['action', 'auth_code', 'force'],
   aifs_share: ['path', 'subject', 'role', 'inherit'],
   aifs_unshare: ['path', 'subject'],
   aifs_get_permissions: ['path', 'include_inherited'],
