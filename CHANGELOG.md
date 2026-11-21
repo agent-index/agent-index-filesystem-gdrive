@@ -17,6 +17,11 @@ Requires shared library `@agent-index/filesystem` 2.3.0 (bundled). Pairs with co
 - Caches are saved after an error too (the error path used to exit before saving).
 - `scope` and batch entries are normalized like other path arguments.
 
+### Fixed during release testing (CI-025 Phases B, C, C2; dev_source_2 FINDINGS)
+- **`bootstrap` with a different sign-in account (108):** an existing member is never sent to setup because the Google account isn't the agent-index email; `needs_setup` now means no member workspace on the install (one workspace → `ready` with `identity_match: false`; several → `ready`, `member_hash` null).
+- **The org map is saved when a collection folder isn't visible to the member (110):** not-found / no-access drops that folder as `not_visible` and the map is saved; other errors stay transient. Before, a member who couldn't see one listed collection rebuilt the map on every call.
+- **`AIFS_VERBOSE`** prints whether the org map was built and saved, read from the saved file, or rebuilt for a newly installed collection (114, 117).
+
 ## [2.11.8] — 2026-11-12 — no startup lock sweep (calls ~4x faster on Cowork)
 
 The fix shipped to CodePath's test channel as its 2.11.7 (`0271e43`, PR #7), rebased onto the released 2.11.7. Pairs with agent-index-core 4.1.1.
