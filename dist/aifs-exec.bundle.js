@@ -60135,6 +60135,12 @@ function classifyRefreshError(err) {
   }
   return "refresh_failed";
 }
+var CredentialLockBusyError = class extends BackendError {
+  constructor(lockFile) {
+    super(`Timed out waiting for the credential-store lock (${lockFile}). Another agent-index process on this computer is refreshing your sign-in. Try again in a moment; you do not need to sign in again.`);
+    this.details = { ...this.details || {}, reason: "credential_lock_busy", needs_auth: false };
+  }
+};
 var GoogleDriveAdapter = class {
   constructor() {
     this.connection = null;
@@ -60207,6 +60213,9 @@ var GoogleDriveAdapter = class {
             expires_at: new Date(this.tokens.expiry_date).toISOString()
           };
         } catch (err) {
+          if (err instanceof CredentialLockBusyError) {
+            return { authenticated: false, ...base, reason: "credential_lock_busy", needs_auth: false, detail: err.message };
+          }
           return {
             authenticated: false,
             ...base,
@@ -60277,7 +60286,7 @@ var GoogleDriveAdapter = class {
       const { tokens } = await this.oauth2Client.getToken(authCode);
       this.tokens = tokens;
       this.oauth2Client.setCredentials(tokens);
-      await this._writeCredential(tokens);
+      await this._withCredentialLock(() => this._writeCredentialUnlocked(tokens));
       const email3 = await this._getUserEmail();
       return {
         status: "authenticated",
@@ -61389,21 +61398,59 @@ var GoogleDriveAdapter = class {
       const e = new NotAuthenticatedError(`Token refresh failed: ${err?.message || err}`);
       e.details.refresh_reason = reason;
       e.details.refresh_detail = err?.message || String(err);
+      if (reason === "expired") {
+        e.message = "Not authenticated: expired. Google rejected your saved agent-index sign-in (revoked, expired or replaced, for example by a copy used somewhere else). Sign in again on this computer with @ai:member-bootstrap. Never copy your sign-in to another machine.";
+        e.details.refresh_detail = `${e.message} (Google: ${err?.message || err})`;
+      }
       e.details.needs_auth = reason === "expired" || reason === "refresh_failed";
       return e;
     };
-    let credentials;
+    const heldAccessToken = this.tokens ? this.tokens.access_token : void 0;
+    await this._withCredentialLock(async () => {
+      if (this.credentialPath)
+        try {
+          const onDisk = JSON.parse(await readFile2(this.credentialPath, "utf-8"));
+          if (onDisk && onDisk.access_token && onDisk.access_token !== heldAccessToken && onDisk.expiry_date && onDisk.expiry_date - 3e5 >= Date.now()) {
+            this.tokens = { ...this.tokens, ...onDisk };
+            this.oauth2Client.setCredentials(this.tokens);
+            return;
+          }
+        } catch {
+        }
+      let credentials;
+      try {
+        ({ credentials } = await this.oauth2Client.refreshAccessToken());
+      } catch (err) {
+        throw fail(classifyRefreshError(err), err);
+      }
+      this.tokens = { ...this.tokens, ...credentials };
+      this.oauth2Client.setCredentials(this.tokens);
+      try {
+        await this._writeCredential(this.tokens);
+      } catch (err) {
+        throw fail("credential_write_failed", err);
+      }
+    });
+  }
+  /** Run fn holding the credential-store lock (a path lock on a reserved key; bug c1a2). */
+  async _withCredentialLock(fn) {
+    if (this._credLockHeld || !this._lockDir)
+      return fn();
+    let lockFile;
     try {
-      ({ credentials } = await this.oauth2Client.refreshAccessToken());
+      lockFile = await this._acquirePathLock("/.agent-index-credentials", this._credLockTimeoutMs);
     } catch (err) {
-      throw fail(classifyRefreshError(err), err);
+      if (err instanceof BackendError && /^Timed out waiting for folder lock/.test(err.message)) {
+        throw new CredentialLockBusyError(this._lockFilePath("/.agent-index-credentials"));
+      }
+      throw err;
     }
-    this.tokens = credentials;
-    this.oauth2Client.setCredentials(credentials);
+    this._credLockHeld = true;
     try {
-      await this._writeCredential(credentials);
-    } catch (err) {
-      throw fail("credential_write_failed", err);
+      return await fn();
+    } finally {
+      this._credLockHeld = false;
+      await this._releasePathLock(lockFile);
     }
   }
   // ─── Cross-process path locking ────────────────────────────────────────
@@ -61443,9 +61490,9 @@ var GoogleDriveAdapter = class {
    * delete-to-release. A lock file with `released: true` is treated
    * the same as no lock file.
    */
-  async _acquirePathLock(normalizedPath) {
+  async _acquirePathLock(normalizedPath, timeoutMs = LOCK_TIMEOUT_MS) {
     const lockFile = this._lockFilePath(normalizedPath);
-    const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    const deadline = Date.now() + (timeoutMs || LOCK_TIMEOUT_MS);
     while (Date.now() < deadline) {
       const lockContent = JSON.stringify({ pid: process.pid, nonce: PROC_NONCE, ts: Date.now() });
       try {
@@ -61530,6 +61577,27 @@ var GoogleDriveAdapter = class {
     }
   }
   async _writeCredential(tokens) {
+    if (this._credLockHeld)
+      return this._writeCredentialUnlocked(tokens);
+    await this._withCredentialLock(async () => {
+      let merged = tokens;
+      try {
+        const onDisk = JSON.parse(await readFile2(this.credentialPath, "utf-8"));
+        if (onDisk && typeof onDisk === "object") {
+          merged = { ...tokens };
+          if (!merged.refresh_token && onDisk.refresh_token)
+            merged.refresh_token = onDisk.refresh_token;
+          if ((onDisk.expiry_date || 0) > (merged.expiry_date || 0) && onDisk.access_token) {
+            merged.access_token = onDisk.access_token;
+            merged.expiry_date = onDisk.expiry_date;
+          }
+        }
+      } catch {
+      }
+      await this._writeCredentialUnlocked(merged);
+    });
+  }
+  async _writeCredentialUnlocked(tokens) {
     const dir = dirname2(this.credentialPath);
     await mkdir(dir, { recursive: true });
     await writeFile(this.credentialPath, JSON.stringify(tokens, null, 2), "utf-8");
