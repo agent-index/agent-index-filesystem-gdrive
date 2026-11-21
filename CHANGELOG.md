@@ -1,6 +1,6 @@
 # agent-index-filesystem-gdrive — Changelog
 
-## [2.12.0] — <RELEASE_DATE> — org locations by plain path (CI-025)
+## [2.12.0] — 2026-11-20 — org locations by plain path (CI-025)
 
 Requires shared library `@agent-index/filesystem` 2.3.0 (bundled). Pairs with core 4.2.0.
 
